@@ -1,0 +1,5 @@
+# KiwiSDR bridge dependencies — install when building post-FD
+# Pin versions once validated
+kiwiclient      # WebSocket IQ client for KiwiSDR; pip install kiwiclient
+numpy           # FFT + bin mapping; likely already present
+scipy           # windowing functions (optional — numpy.hanning works too)
