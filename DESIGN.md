@@ -15,12 +15,12 @@ itself to AetherSDR as a Flex 6000. AetherSDR never needs to know what is behind
 
 ```
 Kenwood / Icom / Yaesu  (CAT / CI-V)  ─┐
-RTL-SDR / Airspy / SDRplay (SoapySDR)  ─┤
-KiwiSDR / WebSDR          (WebSocket)  ─┼──→  Aether-gate  ──→  AetherSDR
+RTL-SDR / Airspy / SDRplay (SoapySDR)  ─┼──→  Aether-gate  ──→  AetherSDR
 Any SoapySDR hardware                  ─┤         │
 Future radios                          ─┘         └── speaks Flex 6000
                                                        VITA-49 + FlexLib
 ```
+(KiwiSDR is intentionally absent — AE supports it natively; see Scope below.)
 
 ## Why this matters
 
@@ -62,27 +62,38 @@ Each new radio is a new adapter. The core never changes.
    radio's native command (CAT, CI-V, WebSocket, SoapySDR API)
 3. **Status readback** — S-meter, TX state, band, mode fed into VITA-49 meter plane
 
+## Scope — the long tail AE will not adopt natively
+
+AetherSDR now has **native KiwiSDR support** (merged upstream June 2026, rfoust).
+KiwiSDR is therefore **out of scope** — AE reaches it directly, inside its own DSP,
+with no re-FFT round-trip. Aether-gate would only be a slower, lossier path to a
+destination AE already owns.
+
+Aether-gate's value is the radios AE's maintainers chose **not** to build in: the
+unglamorous long tail of legacy CAT transceivers and generic SDR dongles. AE went
+"KiwiSDR in"; it is not going to absorb Icom CI-V, Kenwood/Yaesu CAT, and every
+SoapySDR device. That uncontested space is where an external bridge earns its place.
+
 ## Planned adapters
 
 | Radio / Source    | Protocol       | IQ source        | Priority |
 |-------------------|----------------|------------------|----------|
-| KiwiSDR           | WebSocket JSON | 12 kHz IQ        | First    |
-| RTL-SDR           | SoapySDR       | wideband IQ      | Second   |
-| SDRplay / Airspy  | SoapySDR       | wideband IQ      | Second   |
-| Icom CI-V radios  | CI-V / USB     | audio/VAC        | Third    |
-| Kenwood CAT       | serial CAT     | audio/VAC        | Third    |
-| Yaesu CAT         | serial CAT     | audio/VAC        | Third    |
+| RTL-SDR           | SoapySDR       | wideband IQ      | First    |
+| SDRplay / Airspy  | SoapySDR       | wideband IQ      | First    |
+| Icom CI-V radios  | CI-V / USB     | audio/VAC        | Second   |
+| Kenwood CAT       | serial CAT     | audio/VAC        | Second   |
+| Yaesu CAT         | serial CAT     | audio/VAC        | Second   |
 | Any SoapySDR HW   | SoapySDR       | wideband IQ      | Ongoing  |
 
 SoapySDR covers the majority of SDR hardware in a single adapter.
 
 ## Development sequence
 
-1. **KiwiSDR adapter** — proves the IQ → VITA-49 path; real HF signals, no hardware
-2. **SoapySDR adapter** — RTL-SDR / Airspy / SDRplay in one shot
-3. **Icom CI-V adapter** — TX-capable real transceiver
-4. **Plugin interface formalised** — community adds adapters
-5. **Announce** — working code first, then public discussion
+1. **SoapySDR adapter** — RTL-SDR / Airspy / SDRplay in one shot; proves the
+   IQ → VITA-49 path with cheap, ubiquitous hardware
+2. **Icom CI-V adapter** — TX-capable real transceiver
+3. **Plugin interface formalised** — community adds adapters
+4. **Announce** — working code first, then public discussion
 
 ## Relationship to other projects
 
