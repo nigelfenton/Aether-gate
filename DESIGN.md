@@ -29,6 +29,57 @@ Future radios                          ─┘         └── speaks Flex 6000
 - No more CAT wrangling, Omni-Rig, DAX plumbing for non-Flex users
 - "AetherSDR for any radio" — genuine onboarding path for new users
 
+## Rationale — why a gate when AE can already absorb sources natively
+
+AE has shown (with native KiwiSDR, merged upstream June 2026) that it *can* take an
+external source in-process. So the gate has to justify itself against the obvious
+question: "why not just keep adding sources inside AE?"
+
+**The architecture argument (the durable one).**
+Every source AE absorbs natively adds a *parallel* ingest + control path inside AE:
+its own connection handling, its own quirks, its own framing, its own share of the
+processing budget. N sources → N code paths inside the hot core. That surface only
+grows, and each addition is a place for source-specific bugs to compete with AE's
+DSP for attention and CPU.
+
+Aether-gate inverts this: every source is normalised to **one** stream type — a Flex
+VITA-49 stream — *before* AE sees it. AE then maintains exactly **one** ingest
+boundary: the FlexRadio path it is already most optimised for and tests hardest. The
+zoo of source-specific handling lives outside AE's core, in a sidecar that can fail,
+restart, and be debugged without touching the application. This is the "narrow waist"
+principle — many things converge to one well-defined interface, and the complexity
+lives on the outside of that waist, not threaded through the renderer.
+
+That principle holds **whether or not any single source is faster through the gate.**
+It is an architecture claim, not a benchmark claim, and it is the load-bearing
+justification for the project.
+
+**The efficiency argument (real, but be precise about it).**
+"The gate makes AE more efficient" is true in a specific, important sense and false in
+a careless one — the design must not overclaim:
+
+- *True for AE as a node.* AE's CPU only ever runs the Flex ingest path, no matter how
+  many radios are behind the gate. If the bottleneck is AE's own headroom — one
+  machine driving several sources, or a constrained portable head — moving the
+  per-source work to a sidecar is a clean win for that node.
+- *True for AE's maintainers.* One ingest path to optimise and regression-test, not N.
+- *NOT automatically true for total system compute.* A Flex VITA-49 stream is
+  pre-FFT panadapter data plus (near-)raw audio — AE **still** runs its DSP on it.
+  So for an IQ source, the gate must do demod/filtering itself and *then* AE does its
+  own processing on the result. That can raise **total** compute (work relocated, even
+  duplicated), while still lowering **AE's** compute. The two are different ledgers.
+
+**Where the win is largest.** When the gate runs on *separate* hardware (a Pi, the
+shack hub) and AE is the constrained node — exactly the multi-radio / portable-Flex-
+head case. There, offloading per-source ingest off AE's box is unambiguously good,
+and the architecture cleanliness comes for free on top.
+
+**Bottom line.** Sell the gate as an **architecture** play — "AE should have exactly
+one ingest boundary; the zoo of sources lives outside it" — with node-level offload as
+a situational bonus. Do **not** sell it as a universal compute reduction; that claim
+won't survive scrutiny for IQ sources, and overclaiming it would undercut the much
+stronger structural argument.
+
 ## Architecture
 
 ```
