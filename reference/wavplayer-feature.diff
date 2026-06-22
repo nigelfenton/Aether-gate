@@ -1,0 +1,277 @@
+# WavPlayer / selectable audio-source feature — lifted from flex-sim into Aether-gate
+#
+# Belongs in the gate (real-audio bridging from a file/source), not the public sim.
+# Captured 2026-06-21 as the CRLF-ignored diff of the hub's uncommitted flex_sim.py vs
+# committed HEAD, then removed from flex-sim. Adds: AUDIO_SRC_{TONE,NOISE,WAV}, class
+# WavPlayer (WAV read/resample/loop), plus the audio-loop + control-panel/arg hooks to
+# select the source. Re-home into Aether-gate's audio path when building it out.
+# ---------------------------------------------------------------------------------------
+
+diff --git a/flex-sim/flex_sim.py b/flex-sim/flex_sim.py
+index 3fd03d8..2f054b0 100644
+--- a/flex-sim/flex_sim.py
++++ b/flex-sim/flex_sim.py
+@@ -52,7 +52,7 @@ Patterns (each is a test signal; the control panel explains what to look for):
+   tx_blank      periodic real TX gap -> repro #2126 / #1916
+ Also handles AE's own CWX keyer (cwx send/wpm/qsk_enabled) for authentic CW TX.
+ """
+-import argparse, http.server, json, math, random, socket, struct, threading, time, urllib.parse, uuid
++import argparse, http.server, json, math, random, socket, struct, threading, time, urllib.parse, uuid, wave
+ 
+ FLEX_SIM_VERSION = "0.1.1"
+ 
+@@ -112,6 +112,10 @@ AUDIO_RATE   = 24000      # Hz
+ AUDIO_INTERVAL = AUDIO_FRAMES / AUDIO_RATE   # ~5.333 ms / packet → ~187.5 Hz
+ AUDIO_SID_BASE = 0x48000010  # base stream id for audio (per-radio: + radio_id)
+ 
++AUDIO_SRC_TONE  = "tone"    # default: sine tone at audio_tone_hz
++AUDIO_SRC_NOISE = "noise"   # gaussian band noise
++AUDIO_SRC_WAV   = "wav"     # WAV file playback (looped)
++
+ 
+ def log(*a):
+     print(time.strftime("%H:%M:%S"), *a, flush=True)
+@@ -188,6 +192,70 @@ def audio_packet(stream_id, seq, samples, reduced_bw=False):
+     return header + payload
+ 
+ 
++class WavPlayer:
++    """Reads a WAV file and returns resampled mono float samples at AUDIO_RATE.
++
++    Supports 8/16/32-bit PCM, any channel count (mixed to mono), and any
++    sample rate (linear-interpolation resample to 24 kHz).  Loops at EOF.
++    """
++
++    def __init__(self, path):
++        self._wf = wave.open(path, 'rb')
++        self.n_ch = self._wf.getnchannels()
++        self.sw   = self._wf.getsampwidth()   # bytes per sample
++        self.rate = self._wf.getframerate()
++        self._ratio = self.rate / AUDIO_RATE   # src samples per output sample
++        self._buf   = []     # decoded mono floats not yet consumed
++        self._phase = 0.0    # fractional carry-over into next call
++        log(f"[wav] opened: {self.rate}Hz {self.n_ch}ch {self.sw*8}bit "
++            f"→ {AUDIO_RATE}Hz mono  (ratio {self._ratio:.4f})")
++
++    # ------------------------------------------------------------------
++    def _sample_to_float(self, raw):
++        if self.sw == 2:
++            return int.from_bytes(raw, 'little', signed=True) / 32768.0
++        if self.sw == 4:
++            return int.from_bytes(raw, 'little', signed=True) / 2147483648.0
++        return (int.from_bytes(raw, 'little') - 128) / 128.0   # uint8
++
++    def _fill(self, n_src):
++        """Append at least n_src decoded mono floats to self._buf (looping WAV)."""
++        frame_bytes = self.n_ch * self.sw
++        needed = n_src
++        while needed > 0:
++            raw = self._wf.readframes(needed)
++            if not raw:
++                self._wf.rewind(); continue
++            got = len(raw) // frame_bytes
++            for i in range(got):
++                frame = raw[i * frame_bytes:(i + 1) * frame_bytes]
++                s = sum(self._sample_to_float(frame[c * self.sw:(c + 1) * self.sw])
++                        for c in range(self.n_ch)) / self.n_ch
++                self._buf.append(s)
++            needed -= got
++
++    def read(self, n_out):
++        """Return n_out resampled mono float samples, continuing phase from last call."""
++        n_src_needed = int(math.ceil(self._phase + n_out * self._ratio)) + 1
++        self._fill(max(0, n_src_needed - len(self._buf)))
++        out = []
++        p = self._phase
++        for _ in range(n_out):
++            lo = int(p)
++            frac = p - lo
++            hi = min(lo + 1, len(self._buf) - 1)
++            out.append(self._buf[lo] * (1 - frac) + self._buf[hi] * frac)
++            p += self._ratio
++        consumed = int(p)
++        self._buf = self._buf[consumed:]
++        self._phase = p - consumed
++        return out
++
++    def close(self):
++        try: self._wf.close()
++        except Exception: pass
++
++
+ # ---- pattern engine: each pattern returns a per-bin dBm list (or None = TX gap) ----
+ class PatternCtx:
+     def __init__(self, n, center_bin, min_dbm, max_dbm):
+@@ -482,6 +550,8 @@ class Radio:
+         self.audio_thread = None
+         self.audio_tone_hz = 440.0 + radio_id * 220.0  # distinct tone per radio (A4, C#5, …)
+         self.audio_reduced_bw = False  # set True when AE sends 'client set send_reduced_bw_dax=1'
++        self.audio_source   = AUDIO_SRC_TONE  # AUDIO_SRC_TONE | AUDIO_SRC_NOISE | AUDIO_SRC_WAV
++        self.audio_wav_path = None             # filesystem path to WAV file (used when source=wav)
+ 
+     @property
+     def tx_on(self):
+@@ -949,49 +1019,78 @@ class Radio:
+         return out, keydown
+ 
+     def audio_loop(self):
+-        """Send remote_audio_rx VITA-49 packets: float32 stereo, 128 frames @ 24 kHz.
+-        One stream per radio (AE mixes all slices server-side). Emits a deterministic
+-        sine tone so AE has a real audio path to mute/route — making audio-path bugs
+-        (e.g. RADE slice not muting) observable without a real radio.
++        """Send remote_audio_rx VITA-49 packets at AUDIO_RATE.
++
++        Three audio sources are supported (self.audio_source):
++          AUDIO_SRC_TONE  — deterministic sine at audio_tone_hz (default)
++          AUDIO_SRC_NOISE — gaussian band noise
++          AUDIO_SRC_WAV   — WAV file at audio_wav_path, resampled + looped
+         """
+         t0 = time.monotonic()
+         while self.run and not self.vita_dest and time.monotonic() - t0 < 12:
+             time.sleep(0.05)
+         if not self.vita_dest:
+             log("[audio] no UDP dest — cannot stream"); return
++
+         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+-        dest = self.vita_dest
++        dest    = self.vita_dest
+         reduced = self.audio_reduced_bw
+-        log(f"[audio] streaming {self.audio_tone_hz:.0f} Hz tone → {dest}  ({'mono int16' if reduced else 'stereo f32'})")
+-        seq = 0
+-        sample_t = 0   # running sample counter for phase continuity across packets
+-        t_start = time.monotonic()
+-        while self.run and not self.audio_stop.is_set():
+-            amp = 0.1   # −20 dBFS — audible but safe
+-            any_muted = any(sl.get("muted") for sl in self.slices.values())
+-            if any_muted:
+-                samples = [0.0] * (AUDIO_FRAMES if reduced else AUDIO_FRAMES * 2)
+-            else:
+-                samples = [amp * math.sin(2 * math.pi * self.audio_tone_hz * (sample_t + i) / AUDIO_RATE)
+-                           for i in range(AUDIO_FRAMES)]
+-                if not reduced:
+-                    stereo = []
+-                    for v in samples: stereo.extend([v, v])
+-                    samples = stereo
+-            sample_t += AUDIO_FRAMES
++        src     = self.audio_source
++
++        # Open WAV file if needed (fall back to tone on error)
++        wav = None
++        if src == AUDIO_SRC_WAV:
+             try:
+-                s.sendto(audio_packet(self.audio_stream_id, seq & 0xF, samples, reduced_bw=reduced), dest)
+-            except OSError as e:
+-                log("[audio] send error:", e); break
+-            seq += 1
+-            # Absolute deadline scheduling — sleep overshoot is absorbed into the next
+-            # interval rather than accumulating as drift.
+-            deadline = t_start + seq * AUDIO_INTERVAL
+-            wait = deadline - time.monotonic()
+-            if wait > 0:
+-                time.sleep(wait)
+-        s.close()
+-        log("[audio] stopped")
++                wav = WavPlayer(self.audio_wav_path)
++            except Exception as e:
++                log(f"[audio] WAV open failed ({e}), falling back to tone")
++                src = AUDIO_SRC_TONE
++
++        fmt = "mono int16" if reduced else "stereo f32"
++        log(f"[audio] streaming [{src}] → {dest}  ({fmt})")
++
++        seq      = 0
++        sample_t = 0   # phase counter for tone source
++        t_start  = time.monotonic()
++        amp      = 0.1  # −20 dBFS
++
++        try:
++            while self.run and not self.audio_stop.is_set():
++                any_muted = any(sl.get("muted") for sl in self.slices.values())
++                if any_muted:
++                    mono = [0.0] * AUDIO_FRAMES
++                elif src == AUDIO_SRC_WAV and wav:
++                    mono = wav.read(AUDIO_FRAMES)
++                elif src == AUDIO_SRC_NOISE:
++                    mono = [random.gauss(0, amp) for _ in range(AUDIO_FRAMES)]
++                else:  # AUDIO_SRC_TONE
++                    mono = [amp * math.sin(2 * math.pi * self.audio_tone_hz * (sample_t + i) / AUDIO_RATE)
++                            for i in range(AUDIO_FRAMES)]
++
++                sample_t += AUDIO_FRAMES  # harmless for non-tone sources
++
++                if reduced:
++                    samples = mono
++                else:
++                    samples = []
++                    for v in mono: samples.extend([v, v])
++
++                try:
++                    s.sendto(audio_packet(self.audio_stream_id, seq & 0xF, samples, reduced_bw=reduced), dest)
++                except OSError as e:
++                    log("[audio] send error:", e); break
++
++                seq += 1
++                # Absolute deadline — prevents accumulated drift
++                deadline = t_start + seq * AUDIO_INTERVAL
++                wait = deadline - time.monotonic()
++                if wait > 0:
++                    time.sleep(wait)
++        finally:
++            s.close()
++            if wav:
++                wav.close()
++            log("[audio] stopped")
+ 
+     def stream_loop(self):
+         t0 = time.time()
+@@ -1099,6 +1198,21 @@ h2{{color:#5cf}} label{{display:block;margin:16px 0 4px}} select,input[type=rang
+ <button onclick="setp('carrier')">&#9632; Stop</button>
+ </div>
+ <div style="font-size:12px;color:#888;margin-top:6px">sim-keyed CQ CQ CQ TST @ 20 wpm. Authentic path: send from AE's CWX &mdash; the sim follows AE's QSK.</div>
++<hr style="border-color:#333;margin:20px 0">
++<h3 style="color:#5cf;margin:0 0 10px">Audio source</h3>
++<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
++<label style="margin:0"><input type=radio name=asrc value=tone id=r_tone checked onchange=updAudio()> Tone <span style="color:#888;font-size:12px">(440 Hz sine)</span></label>
++<label style="margin:0"><input type=radio name=asrc value=noise id=r_noise onchange=updAudio()> Noise <span style="color:#888;font-size:12px">(gaussian)</span></label>
++<label style="margin:0"><input type=radio name=asrc value=wav id=r_wav onchange=updAudio()> WAV file</label>
++</div>
++<div id=wav_row style="margin-top:10px;display:none">
++<label style="margin:0 0 4px;display:block;font-size:13px;color:#aaa">WAV path (server filesystem)</label>
++<input type=text id=wav_path placeholder="/path/to/capture.wav"
++  style="width:374px;background:#1a2332;color:#ddd;border:1px solid #334;padding:4px 6px;font-family:monospace"
++  oninput=updAudio()>
++<div style="font-size:12px;color:#666;margin-top:4px">Any sample rate / channel count. Resampled to 24&nbsp;kHz mono and looped.
++<br>Takes effect on next audio stream start (reconnect AE if already connected).</div>
++</div>
+ <script>
+ function sLabel(d){{var o=d+73;if(o>0)return '(S9+'+Math.round(o)+'dB)';return '(S'+Math.max(0,Math.round(9+o/6))+')';}}
+ var qskv=0;
+@@ -1119,6 +1233,13 @@ noise:"Random noise band, white→pink tilt. Floor texture and colour mapping."
+ }};
+ function setp(p){{pat.value=p;upd();}}
+ function sendcw(q){{qskv=q;pat.value='cw';upd();}}
++function updAudio(){{
++  var src=document.querySelector('input[name=asrc]:checked').value;
++  document.getElementById('wav_row').style.display=(src==='wav'?'block':'none');
++  var p=new URLSearchParams({{audio_src:src}});
++  if(src==='wav')p.append('wav_path',document.getElementById('wav_path').value);
++  fetch('/set?'+p.toString());
++}}
+ function upd(){{var h=HINTS[pat.value];if(h)hint.innerHTML=h;
+ floorv.textContent=floor.value;levelv.textContent=level.value;
+ floors.textContent=sLabel(+floor.value);levels.textContent=sLabel(+level.value);
+@@ -1165,6 +1286,14 @@ def start_control_server(radio, port):
+                             radio.emit_transmit_status()
+                         log(f"[ctl] pattern -> {radio.pattern}  (floor={radio.noise_floor_dbm:.0f}dBm "
+                             f"level={radio.sig_level_dbm:.0f}dBm width={radio.sig_width_khz:.0f} tilt={radio.noise_color:.0f})")
++                    if "audio_src" in q:
++                        src = q["audio_src"][0]
++                        if src in (AUDIO_SRC_TONE, AUDIO_SRC_NOISE, AUDIO_SRC_WAV):
++                            radio.audio_source = src
++                            log(f"[ctl] audio_source -> {src}")
++                    if "wav_path" in q:
++                        radio.audio_wav_path = q["wav_path"][0] or None
++                        log(f"[ctl] audio_wav_path -> {radio.audio_wav_path}")
+                 except ValueError:
+                     pass
+                 self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
