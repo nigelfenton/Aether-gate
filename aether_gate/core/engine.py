@@ -993,6 +993,12 @@ class Radio:
                 self.audio_stream_id = sid
                 self.dax_channel = None
                 self.reply(conn, seq, f"0x{sid:08X}")
+                # Confirming STATUS line — a real Flex emits this; without it AE logs
+                # status_seen=0 and the stream isn't fully validated (it plays on PC
+                # audio but the TCI RX-audio forwarder to WSJT-X/JTDX may not engage).
+                self.status(conn, f"stream 0x{sid:08X} type=remote_audio_rx "
+                                  f"compression=none client_handle=0x{self.handle_hex}")
+                log(f"[audio] registered remote_audio_rx stream 0x{sid:08X}")
                 self._start_audio_thread()
             elif kvs.get("type") == "dax_rx":
                 # AE arms a DAX RX channel for RADE / digital decode. It relies on a
