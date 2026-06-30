@@ -701,6 +701,9 @@ class Radio:
         # radio_id off the base constants below.
         self.radio_id = radio_id
         self.serial = f"FLEXSIM{radio_id:02d}"
+        if adapter is not None and getattr(adapter, "capabilities", None) is not None \
+                and adapter.capabilities.serial:
+            self.serial = adapter.capabilities.serial   # adapter identity -> distinct serial in AE's chooser
         self.client_handle = HANDLE + radio_id   # NB: NOT self.handle — that's the method!
         self.handle_hex = f"{self.client_handle:08X}"
         self.pan_id = PAN_ID + radio_id * 16     # FFT stream-id BASE; AE stacks a panadapter per +RX,

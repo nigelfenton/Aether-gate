@@ -9,9 +9,11 @@ New adapters register here; the CLI resolves `--adapter <name>` through get_adap
 """
 from .base import RadioAdapter, AdapterCaps, Meters
 from .sim import SimAdapter
+from .soapy import SoapyAdapter   # SoapySDR import is deferred to .open(), safe to import here
 
 _REGISTRY = {
     "sim": SimAdapter,
+    "soapy": SoapyAdapter,
 }
 
 
@@ -32,5 +34,5 @@ def available():
     return sorted(_REGISTRY)
 
 
-__all__ = ["RadioAdapter", "AdapterCaps", "Meters", "SimAdapter",
+__all__ = ["RadioAdapter", "AdapterCaps", "Meters", "SimAdapter", "SoapyAdapter",
            "register", "get_adapter", "available"]

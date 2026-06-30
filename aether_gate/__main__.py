@@ -23,7 +23,11 @@ def build_adapter(name, args):
     cls = get_adapter(name)
     if name == "sim":
         return cls(pattern=args.pattern, model=args.model)
-    # Generic construction for future adapters; they parse their own --adapter-opt later.
+    if name == "soapy":
+        return cls(driver=args.soapy_driver, device_args=args.soapy_args,
+                   samp_rate=args.samp_rate, gain_db=args.gain,
+                   model=args.model, serial=args.serial,
+                   direct_samp=args.direct_samp, agc=args.agc)
     return cls()
 
 
@@ -44,6 +48,14 @@ def main(argv=None):
     ap.add_argument("--port", type=int, default=DEFAULT_PORT,
                     help="control/data port to bind+advertise (default 4992; set e.g. 5992 to coexist with AE on one host)")
     ap.add_argument("--ctl-port", type=int, default=8731, help="web control-panel port (0 to disable)")
+    # soapy adapter options
+    ap.add_argument("--soapy-driver", default="rtlsdr", help="soapy adapter: SoapySDR driver (rtlsdr/airspy/sdrplay/...)")
+    ap.add_argument("--soapy-args", default="", help="soapy adapter: extra device args, comma kv (e.g. serial=00000001)")
+    ap.add_argument("--samp-rate", type=float, default=2_048_000, help="soapy adapter: sample rate (Hz)")
+    ap.add_argument("--gain", type=float, default=40.0, help="soapy adapter: RX gain dB (ignored if --agc)")
+    ap.add_argument("--agc", action="store_true", help="soapy adapter: enable hardware AGC")
+    ap.add_argument("--direct-samp", default=None, help="soapy adapter: RTL direct-sampling mode (Q=2 for HF on non-V4)")
+    ap.add_argument("--serial", default="GATE0001", help="advertised Flex serial (unique per gate; avoids AE chooser collisions)")
     args = ap.parse_args(argv)
 
     ip = args.ip or local_ip()
