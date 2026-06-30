@@ -1,5 +1,5 @@
 #
-# Aether-gate — adapter registry.
+# Aether-gate - adapter registry.
 # Copyright (C) 2026 Nigel Fenton (G0JKN). GPL-3.0-or-later.
 #
 """Adapter registry: name -> RadioAdapter subclass.
@@ -10,10 +10,12 @@ New adapters register here; the CLI resolves `--adapter <name>` through get_adap
 from .base import RadioAdapter, AdapterCaps, Meters
 from .sim import SimAdapter
 from .soapy import SoapyAdapter   # SoapySDR import is deferred to .open(), safe to import here
+from .icom9700 import Icom9700Adapter   # icom/ LAN transport imports are stdlib-only, safe here
 
 _REGISTRY = {
     "sim": SimAdapter,
     "soapy": SoapyAdapter,
+    "icom9700": Icom9700Adapter,
 }
 
 
@@ -35,4 +37,4 @@ def available():
 
 
 __all__ = ["RadioAdapter", "AdapterCaps", "Meters", "SimAdapter", "SoapyAdapter",
-           "register", "get_adapter", "available"]
+           "Icom9700Adapter", "register", "get_adapter", "available"]

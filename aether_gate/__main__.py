@@ -1,11 +1,12 @@
 #
-# Aether-gate — CLI entry point.
+# Aether-gate - CLI entry point.
 # Copyright (C) 2026 Nigel Fenton (G0JKN). GPL-3.0-or-later.
 #
 """Run Aether-gate with a chosen adapter:
 
     python -m aether_gate --adapter sim --pattern test_card
     python -m aether_gate --adapter sim --model FLEX-6700 --ae 10.0.0.107
+    python -m aether_gate --adapter icom9700 --radio-ip 10.0.0.7 --user nigel --pass *** --ae 10.0.0.103
 
 The core threads (discovery, UDP prime, control TCP serve) are wired exactly as
 flex-sim wires them; only the signal source is swapped for the adapter.
@@ -28,6 +29,14 @@ def build_adapter(name, args):
                    samp_rate=args.samp_rate, gain_db=args.gain,
                    model=args.model, serial=args.serial, station=args.station,
                    direct_samp=args.direct_samp, agc=args.agc)
+    if name == "icom9700":
+        # give the 9700 a distinct identity unless the user overrode the shared defaults
+        serial = args.serial if args.serial != "GATE0001" else "GATE9700"
+        station = args.station if args.station != "aether-gate 1" else "aether-gate 9700"
+        return cls(radio_ip=args.radio_ip, username=args.user, password=args.pw,
+                   local_ip=args.ip, radio_port=args.radio_port,
+                   civ_addr=int(str(args.civ_addr), 16), model=args.model,
+                   serial=serial, station=station)
     return cls()
 
 
@@ -55,9 +64,18 @@ def main(argv=None):
     ap.add_argument("--gain", type=float, default=40.0, help="soapy adapter: RX gain dB (ignored if --agc)")
     ap.add_argument("--agc", action="store_true", help="soapy adapter: enable hardware AGC")
     ap.add_argument("--direct-samp", default=None, help="soapy adapter: RTL direct-sampling mode (Q=2 for HF on non-V4)")
+    # icom9700 adapter options
+    ap.add_argument("--radio-ip", default=None, help="icom9700 adapter: IC-9700 LAN IP")
+    ap.add_argument("--user", default=None, help="icom9700 adapter: radio Network username")
+    ap.add_argument("--pass", dest="pw", default=None, help="icom9700 adapter: radio Network password")
+    ap.add_argument("--radio-port", type=int, default=50001, help="icom9700 adapter: control port (default 50001)")
+    ap.add_argument("--civ-addr", default="A2", help="icom9700 adapter: radio CI-V address hex (default A2)")
     ap.add_argument("--serial", default="GATE0001", help="advertised Flex serial (unique per gate; avoids AE chooser collisions)")
     ap.add_argument("--station", default="aether-gate 1", help="station name AE displays (number per dongle: 'aether-gate 1', 'aether-gate 2', ...)")
     args = ap.parse_args(argv)
+
+    if args.adapter == "icom9700" and not (args.radio_ip and args.user and args.pw):
+        ap.error("--adapter icom9700 requires --radio-ip, --user and --pass")
 
     ip = args.ip or local_ip()
     adapter = build_adapter(args.adapter, args)
