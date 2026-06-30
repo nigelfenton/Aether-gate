@@ -1,0 +1,59 @@
+#
+# Aether-gate — IC-9700 LAN credential obfuscation.
+# Copyright (C) 2026 Nigel Fenton (G0JKN). GPL-3.0-or-later.
+#
+# The substitution table and algorithm are an Icom-firmware constant, described
+# in the behavioral protocol reference and present in the GPL-3.0 project
+# github.com/w5jwp/SDR9700 (UdpBase.h). Reused here with attribution under GPL-3.0.
+#
+"""IC-9700 (Icom networked-radio) username/password obfuscation.
+
+NOT encryption — a fixed 256-byte substitution to avoid plaintext-on-wire. The
+radio firmware shares the table; we replicate it to log in. Per input char i:
+    p = byte[i] + i ; if p > 126: p = 32 + (p % 127) ; out[i] = TABLE[p]
+Output is fixed 16 bytes (zero-padded).
+"""
+
+# Fixed 256-byte substitution table (firmware constant; indices 0-31 and the
+# tail are 0x00, the printable range 32-126 carries the permutation).
+SEQUENCE = bytes([
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x47, 0x5d, 0x4c, 0x42, 0x66, 0x20, 0x23, 0x46, 0x4e, 0x57, 0x45, 0x3d, 0x67, 0x76, 0x60, 0x41,
+    0x62, 0x39, 0x59, 0x2d, 0x68, 0x7e, 0x7c, 0x65, 0x7d, 0x49, 0x29, 0x72, 0x73, 0x78, 0x21, 0x6e,
+    0x5a, 0x5e, 0x4a, 0x3e, 0x71, 0x2c, 0x2a, 0x54, 0x3c, 0x3a, 0x63, 0x4f, 0x43, 0x75, 0x27, 0x79,
+    0x5b, 0x35, 0x70, 0x48, 0x6b, 0x56, 0x6f, 0x34, 0x32, 0x6c, 0x30, 0x61, 0x6d, 0x7b, 0x2f, 0x4b,
+    0x64, 0x38, 0x2b, 0x2e, 0x50, 0x40, 0x3f, 0x55, 0x33, 0x37, 0x25, 0x77, 0x24, 0x26, 0x74, 0x6a,
+    0x28, 0x53, 0x4d, 0x69, 0x22, 0x5c, 0x44, 0x31, 0x36, 0x58, 0x3b, 0x7a, 0x51, 0x5f, 0x52, 0x00,
+] + [0x00] * 128)
+
+assert len(SEQUENCE) == 256, len(SEQUENCE)
+
+FIELD_LEN = 16
+
+
+def obfuscate(text: str, length: int = FIELD_LEN) -> bytes:
+    """Obfuscate a username/password into the `length`-byte (zero-padded) field."""
+    raw = text[:length].encode("latin-1")
+    out = bytearray(length)
+    for i, b in enumerate(raw):
+        p = b + i
+        if p > 126:
+            p = 32 + (p % 127)
+        out[i] = SEQUENCE[p]
+    return bytes(out)
+
+
+def deobfuscate(data: bytes) -> str:
+    """Reverse the obfuscation (debug/round-trip checks only)."""
+    rev = {}
+    for idx, v in enumerate(SEQUENCE):
+        if v != 0 and v not in rev:
+            rev[v] = idx
+    out = bytearray()
+    for i, b in enumerate(data):
+        if b == 0:
+            break
+        if b in rev:
+            out.append((rev[b] - i) % 127)
+    return out.decode("latin-1", errors="ignore")
