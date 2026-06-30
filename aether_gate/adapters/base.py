@@ -32,6 +32,7 @@ class AdapterCaps:
     """
     model: str = "FLEX-6600"       # advertised radio model (-> slice cap)
     serial: str = ""               # advertised serial (blank -> core derives one)
+    station: str = ""              # station name AE displays (blank -> core default)
     tx_capable: bool = False       # source can transmit (real transceiver) vs RX-only (dongle/WebSDR)
     min_span_hz: float = 48_000.0  # narrowest span the source can render
     max_span_hz: float = 14_000_000.0

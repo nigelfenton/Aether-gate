@@ -701,9 +701,12 @@ class Radio:
         # radio_id off the base constants below.
         self.radio_id = radio_id
         self.serial = f"FLEXSIM{radio_id:02d}"
-        if adapter is not None and getattr(adapter, "capabilities", None) is not None \
-                and adapter.capabilities.serial:
-            self.serial = adapter.capabilities.serial   # adapter identity -> distinct serial in AE's chooser
+        self.station = "flex-sim"                       # name AE displays; legacy default
+        if adapter is not None and getattr(adapter, "capabilities", None) is not None:
+            if adapter.capabilities.serial:
+                self.serial = adapter.capabilities.serial   # distinct serial in AE's chooser
+            if adapter.capabilities.station:
+                self.station = adapter.capabilities.station  # distinct station label in AE
         self.client_handle = HANDLE + radio_id   # NB: NOT self.handle — that's the method!
         self.handle_hex = f"{self.client_handle:08X}"
         self.pan_id = PAN_ID + radio_id * 16     # FFT stream-id BASE; AE stacks a panadapter per +RX,
@@ -797,7 +800,7 @@ class Radio:
         dests = [("255.255.255.255", DISCOVERY_PORT)] + ([(self.ae_ip, DISCOVERY_PORT)] if self.ae_ip else [])
         while self.run:
             if self.enabled:                       # "powered off" -> stop advertising
-                msg = (f"name=flex-sim model={self.model} serial={self.serial} version={VERSION} "
+                msg = (f"name={self.station} model={self.model} serial={self.serial} version={VERSION} "
                        f"ip={self.ip} port={self.port} status=Available mf_enable=1 "
                        f"slices={self.max_slices} pans={self.max_slices} "   # capacity -> AE enables +RX
                        f"max_licensed_version=3").encode()   # rebuilt each tick -> live model change propagates
@@ -958,7 +961,7 @@ class Radio:
             self.emit_radio_status(conn)                   # slice/pan capability -> AE enables +RX
         elif c.startswith("info"):
             self.reply(conn, seq, f"model={self.model},chassis_serial={self.serial},callsign=SDRSIM,"
-                                  f"name=flex-sim,software_ver={VERSION},ip={self.ip}")
+                                  f"name={self.station},software_ver={VERSION},ip={self.ip}")
         elif c == "mic list":
             self.reply(conn, seq, "MIC,LINE")
         elif c.startswith("client udpport"):
@@ -1160,7 +1163,7 @@ class Radio:
         self.status(conn, f"radio slices={len(self.slices)} max_slices={self.max_slices} "
                           f"panadapters={self.max_slices} "
                           f"lineout_gain=50 lineout_mute=0 headphone_gain=50 headphone_mute=0 "
-                          f"callsign=SDRSIM nickname=flex-sim")
+                          f"callsign=SDRSIM nickname={self.station}")
         log(f"[->] radio status: slices(in-use)={len(self.slices)} max_slices={self.max_slices}")
 
     def emit_meter_status(self, conn):

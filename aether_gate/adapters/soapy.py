@@ -30,7 +30,7 @@ class SoapyAdapter(RadioAdapter):
 
     def __init__(self, driver="rtlsdr", device_args="", samp_rate=2_048_000,
                  gain_db=40.0, center_hz=14_100_000.0, model="FLEX-6700",
-                 serial="GATE0001", direct_samp=None, agc=False):
+                 serial="GATE0001", station="aether-gate 1", direct_samp=None, agc=False):
         self.driver = driver
         self.device_args = device_args
         self.samp_rate = float(samp_rate)
@@ -38,7 +38,7 @@ class SoapyAdapter(RadioAdapter):
         self.center_hz = float(center_hz)
         self.direct_samp = direct_samp      # RTL direct-sampling mode (Q=2 for HF on non-V4); None=auto
         self.agc = agc
-        self.capabilities = AdapterCaps(model=model, serial=serial, tx_capable=False,
+        self.capabilities = AdapterCaps(model=model, serial=serial, station=station, tx_capable=False,
                                         min_span_hz=48_000.0, max_span_hz=samp_rate)
         self._sdr = None
         self._stream = None

@@ -26,7 +26,7 @@ def build_adapter(name, args):
     if name == "soapy":
         return cls(driver=args.soapy_driver, device_args=args.soapy_args,
                    samp_rate=args.samp_rate, gain_db=args.gain,
-                   model=args.model, serial=args.serial,
+                   model=args.model, serial=args.serial, station=args.station,
                    direct_samp=args.direct_samp, agc=args.agc)
     return cls()
 
@@ -56,6 +56,7 @@ def main(argv=None):
     ap.add_argument("--agc", action="store_true", help="soapy adapter: enable hardware AGC")
     ap.add_argument("--direct-samp", default=None, help="soapy adapter: RTL direct-sampling mode (Q=2 for HF on non-V4)")
     ap.add_argument("--serial", default="GATE0001", help="advertised Flex serial (unique per gate; avoids AE chooser collisions)")
+    ap.add_argument("--station", default="aether-gate 1", help="station name AE displays (number per dongle: 'aether-gate 1', 'aether-gate 2', ...)")
     args = ap.parse_args(argv)
 
     ip = args.ip or local_ip()
