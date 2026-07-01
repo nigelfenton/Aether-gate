@@ -41,6 +41,20 @@ last resort. SDRs (Radioberry/RTL/Airspy) are `native-iq` and need no CAT at all
 - **`audio-fft`:** FFT the rig's USB-audio (narrow ~12 kHz window). Last resort.
 - **`native-iq`:** SDR delivers raw IQ; core FFTs it (soapy adapter). Radioberry/RTL/Airspy/SDRplay.
 
+## Default spectrum policy — RTL-SDR for any scope-less rig
+**If a radio has no native scope (`has_scope=false` / spectrum != `civ-scope`), default its spectrum to
+`soapy-iftap` with an RTL-SDR.** Hamlib(control) + RTL-SDR(spectrum), CAT-steered, = a universal "any
+CAT rig → AE with a real panadapter" recipe (reuses the proven `soapy` adapter). Rules for the default:
+- **Tap point:** default = **off-air, CAT-steered** (dongle on its own antenna) — no rig mod, **no TX
+  risk**, sees the band. Options up the fidelity ladder: **antenna tap** (coupler on feedline — real
+  RF, but MUST protect dongle from TX: isolation + PTT-driven disconnect relay) → **IF tap** (true rig
+  panadapter through its filters; needs IF jack/mod + axis center/inversion constants).
+- **Dongle must match the rig's band:** plain RTL (R820T) = VHF/UHF only (>=24 MHz). **HF rig → needs an
+  HF-capable dongle** (RTL-SDR Blog V4 / upconverter / RX888 / Airspy HF+). VHF/UHF rig → plain RTL fine.
+- **Span:** RTL ~2 MHz usable (fine for a band view); Airspy/RX888 for wider.
+- **CAT-steer:** the dongle follows the rig's freq (Hamlib readback) so the pan centres where the rig is
+  tuned; retune the dongle only near the window edge (as the soapy adapter already does for slices).
+
 ## Bands beyond the advertised Flex model
 Advertise FLEX-6700 (has built-in 2 m) for rigs with 2 m; FLEX-6600 for HF+6 m. Anything past that
 (70 cm, 23 cm, microwave) rides **AE's native XVTR** — gate maps the IF AE tunes ↔ the real RF.
