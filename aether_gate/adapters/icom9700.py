@@ -306,7 +306,8 @@ class Icom9700Adapter(RadioAdapter):
             pass
         self._civ = self._handler = None
         for attempt in range(4):
-            time.sleep(18.0)                               # let the radio's stale session age out
+            time.sleep(30.0)                               # let the radio's stale session fully age out
+                                                           # (tonight: needs ≥30s untouched to accept a fresh session)
             try:
                 self.open()                                # re-auth + civ + health gate
                 self._wd_freq_t = time.monotonic()         # reset the watchdog clock
@@ -366,29 +367,32 @@ class Icom9700Adapter(RadioAdapter):
         if not self._civ:
             return None
         now = time.monotonic()
-        if now - self._smeter_sent_at >= 0.1:
-            self._civ.poll_smeter()
+        # THROTTLED + STAGGERED polling. The old code flooded the 9700's CI-V
+        # (S-meter at 10 Hz + 5 reads/sec bursting together + the scope
+        # watchdog re-firing 3 cmds/sec) → ~18 msg/s wedged the RS-BA1 session
+        # within seconds (deaf session). The radio can't sustain that. Now:
+        # ONE read per ~0.4 s tick in round-robin, S-meter ~2.5 Hz, so the
+        # sustained CI-V rate is a few msg/s the radio tolerates.
+        if now - self._smeter_sent_at >= 0.4:
+            self._civ.poll_smeter()                        # 15 02 (S-meter) ~2.5 Hz
             self._smeter_sent_at = now
-        if now - self._freq_polled_at >= 1.0:
-            # keep the SELECTED-VFO freq + mode fresh even when the rig's CI-V
-            # transceive is off, so the dial (and band changes) drive AE.
-            # 25 00 = selected freq (the authority; 03 reads MAIN only and
-            # diverges from what we tune), 26 00 = selected mode (fixes the
-            # stale-mode issue: showed DIGU while the rig was FM). 25 01 =
-            # other vfo, kept fresh for the future dual-slice model.
-            self._civ._send_civ(bytes([0x25, 0x00]))
-            self._civ._send_civ(bytes([0x26, 0x00]))
-            self._civ._send_civ(bytes([0x25, 0x01]))    # SUB freq
-            self._civ._send_civ(bytes([0x26, 0x01]))    # SUB mode
-            self._civ._send_civ(bytes([0x07, 0xD2]))    # dualwatch on/off
-            # TWO-TIER WATCHDOG for a stalled CI-V session (heavy band/VFO
-            # fiddling can wedge the RS-BA1 session mid-run):
-            #  (1) scope frames stopped but reads still fresh -> just the scope
-            #      dropped; re-fire enable_scope (SDR9700 does the same).
-            #  (2) FREQ reads ALSO frozen for ~6 s despite re-enables -> the
-            #      whole session has gone DEAF; a scope re-enable can't wake it,
-            #      so flag for a full reconnect (close+open) — done off the poll
-            #      thread by the engine via needs_reconnect().
+        if now - self._freq_polled_at >= 0.4:
+            self._freq_polled_at = now
+            # round-robin ONE read per tick (not a 5-read burst): full cycle
+            # of freq/mode/sub every ~2 s — plenty fresh for dial/band sync.
+            READS = (bytes([0x25, 0x00]),   # selected freq (authority)
+                     bytes([0x26, 0x00]),   # selected mode
+                     bytes([0x25, 0x01]),   # SUB freq
+                     bytes([0x26, 0x01]),   # SUB mode
+                     bytes([0x07, 0xD2]))   # dualwatch reg
+            i = getattr(self, "_read_rr", 0)
+            self._civ._send_civ(READS[i % len(READS)])
+            self._read_rr = i + 1
+
+            # WATCHDOG (rate-limited so IT doesn't add to the flood):
+            #  tier 1: scope frames stalled but reads fresh -> re-enable scope,
+            #          but only every ~4 s (SDR9700-style), not every tick.
+            #  tier 2: freq reads frozen ≥8 s -> session deaf -> reconnect flag.
             frames = self._civ.frames
             scope_stalled = (frames == getattr(self, "_scope_frames_last", -1))
             self._scope_frames_last = frames
@@ -397,14 +401,15 @@ class Icom9700Adapter(RadioAdapter):
                 self._wd_freq_last = fz
                 self._wd_freq_t = now                      # reads are advancing
             reads_frozen_for = now - getattr(self, "_wd_freq_t", now)
-            if scope_stalled and reads_frozen_for < 5.0:
-                self._civ.enable_scope()                   # tier 1: nudge the scope
+            if scope_stalled and reads_frozen_for < 7.0 \
+                    and now - getattr(self, "_scope_reenable_t", 0) >= 4.0:
+                self._civ.enable_scope()                   # tier 1: nudge, rate-limited
+                self._scope_reenable_t = now
                 print("[scope] stream stalled -> re-enabling", flush=True)
-            elif reads_frozen_for >= 6.0 and not getattr(self, "_want_reconnect", False):
+            elif reads_frozen_for >= 8.0 and not getattr(self, "_want_reconnect", False):
                 self._want_reconnect = True                # tier 2: session deaf -> reconnect
                 print(f"[civ] session deaf {reads_frozen_for:.0f}s "
                       f"(reads frozen) -> requesting reconnect", flush=True)
-            self._freq_polled_at = now
         raw = self._civ.smeter_raw
         if raw is None:
             return None
