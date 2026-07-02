@@ -67,6 +67,9 @@ class _Ic9700Stream(Ic9700Civ):
         self.freq_hz = None
         self.mode = None
         self.smeter_raw = None         # last CI-V 15 02 reading, 0..255
+        self._tune_target = None       # latest AE-requested freq (tuner thread chases it)
+        self._tune_evt = threading.Event()
+        self._tuner = None
 
     def _on_iamready(self):
         # open the data stream, enable the scope (on + output + MAIN), then
@@ -113,7 +116,7 @@ class _Ic9700Stream(Ic9700Civ):
                     self.n_fa += 1
             i = d.find(b"\xfe\xfe", end)
 
-    def _try_freq(self, hz, settle=0.35):
+    def _try_freq(self, hz, settle=0.25):
         """Selected-VFO tune (25 00). Returns False if the radio FA'd it."""
         fa0 = self.n_fa
         self._send_civ(bytes([0x25, 0x00]) + _encode_bcd(hz))
@@ -121,16 +124,39 @@ class _Ic9700Stream(Ic9700Civ):
         return self.n_fa == fa0
 
     def set_freq_hz(self, hz):
+        # ASYNC + COALESCING: AE streams slice tunes while dragging, and the
+        # cross-band recipe needs FA-check waits — blocking the engine's
+        # command thread here seized the whole gate (2026-07-01 lockup).
+        # Record the latest target and let the tuner thread chase it.
+        self._tune_target = int(hz)
+        if self._tuner is None or not self._tuner.is_alive():
+            self._tuner = threading.Thread(target=self._tuner_loop, daemon=True,
+                                           name="ic9700-tuner")
+            self._tuner.start()
+        self._tune_evt.set()
+
+    def _tuner_loop(self):
+        # Chases self._tune_target; intermediate drag positions coalesce away.
         # Cross-band recipe proven on HW 2026-07-01 (dev/ic9700_xband2):
         # 25 00 tunes same-band and any UNHELD band; a band parked on the
         # SUB receiver is refused (FA) — swap main/sub (07 B0) and retry.
-        if self._try_freq(hz):
-            self.freq_hz = int(hz)
-            return
-        self._send_civ(bytes([0x07, 0xB0]))     # swap main/sub
-        time.sleep(0.4)
-        if self._try_freq(hz):
-            self.freq_hz = int(hz)
+        while self._run:
+            self._tune_evt.wait(timeout=0.5)
+            self._tune_evt.clear()
+            tgt = self._tune_target
+            if tgt is None:
+                continue
+            if self.freq_hz is not None and abs(self.freq_hz - tgt) < 1:
+                continue
+            if self._try_freq(tgt):
+                self.freq_hz = tgt
+                continue
+            if self._tune_target != tgt:
+                continue                        # target moved on — chase that instead
+            self._send_civ(bytes([0x07, 0xB0]))  # swap main/sub, then retry
+            time.sleep(0.4)
+            if self._try_freq(tgt):
+                self.freq_hz = tgt
 
     def set_mode_civ(self, mode_byte, filt=0x01):
         self._send_civ(bytes([0x06, mode_byte, filt]))
