@@ -147,14 +147,39 @@ def log(*a):
         print(msg.encode("ascii", "replace").decode("ascii"), flush=True)
 
 
+def _is_cgnat(ip):
+    """100.64.0.0/10 (RFC 6598) — Tailscale hands these out. A radio advertised
+    on one fights the LAN copy in AE's chooser (seen live 2026-07-01: a stray
+    sim on a tailscaled box autodetected 100.89.x.x and duelled the hub sim)."""
+    try:
+        o = [int(x) for x in ip.split(".")]
+        return o[0] == 100 and 64 <= o[1] <= 127
+    except (ValueError, IndexError):
+        return False
+
+
 def local_ip():
+    # The connect trick returns the source IP of the default route, which on a
+    # Tailscale/VPN box can be the tunnel address. Prefer a private-LAN address.
+    cand = None
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        s.connect(("8.8.8.8", 80)); return s.getsockname()[0]
+        s.connect(("8.8.8.8", 80)); cand = s.getsockname()[0]
     except OSError:
-        return "127.0.0.1"
+        pass
     finally:
         s.close()
+    if cand and not _is_cgnat(cand):
+        return cand
+    # fall back to any non-CGNAT, non-loopback interface address
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if not ip.startswith("127.") and not _is_cgnat(ip):
+                return ip
+    except OSError:
+        pass
+    return cand or "127.0.0.1"
 
 
 def parse_kvs(text):
