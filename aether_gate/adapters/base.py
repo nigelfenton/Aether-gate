@@ -71,6 +71,16 @@ class RadioAdapter(ABC):
         """AE's pan zoom changed (full width, Hz). Optional: adapters whose
         source has a native span (a rig's band scope) can follow it."""
 
+    def initial_center_hz(self):
+        """Where the source is tuned right now (Hz), or None. A real radio
+        should answer so the engine seeds AE's pan/slice on the rig's band
+        instead of the sim default."""
+        return None
+
+    def initial_mode(self):
+        """The source's current mode string (USB/FM/...), or None."""
+        return None
+
     # --- readback (radio -> AE) -----------------------------------------
     def read_meters(self) -> Meters:
         """Optional S-meter / TX state. Default: quiet RX."""

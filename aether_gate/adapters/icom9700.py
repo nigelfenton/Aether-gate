@@ -140,6 +140,7 @@ class Icom9700Adapter(RadioAdapter):
         self._civ = None
         self._span_half_hz = 500_000      # what the scope is set to (± half-width)
         self._span_sent_at = 0.0
+        self._smeter_sent_at = 0.0        # rate-limit the 15 02 poll (10 Hz like SDR9700)
 
     def open(self):
         lip = self.local_ip or _local_ip()
@@ -192,14 +193,18 @@ class Icom9700Adapter(RadioAdapter):
         return _resample(dbm, ctx.n)
 
     def read_meters(self):
-        # Async poll: send the read now, return the last parsed value (one
-        # frame behind — fine for a meter; SDR9700 polls 15 02 at 10 Hz too).
+        # Async poll: send the read (rate-limited to 10 Hz — the engine calls
+        # per frame), return the last parsed value; one poll behind is fine
+        # for a meter. None (no data yet) -> engine falls back to spectrum.
         if not self._civ:
-            return Meters()
-        self._civ.poll_smeter()
+            return None
+        now = time.monotonic()
+        if now - self._smeter_sent_at >= 0.1:
+            self._civ.poll_smeter()
+            self._smeter_sent_at = now
         raw = self._civ.smeter_raw
         if raw is None:
-            return Meters()
+            return None
         # Icom S-meter: 0=S0, 120=S9, 241=S9+60dB. VHF convention S9 = -93 dBm
         # (6 dB/S-unit -> S0 = -147), then linear dB above S9.
         if raw <= 120:
@@ -207,3 +212,17 @@ class Icom9700Adapter(RadioAdapter):
         else:
             dbm = -93.0 + (raw - 120) * (60.0 / 121.0)
         return Meters(s_meter_dbm=dbm)
+
+    def initial_center_hz(self):
+        # The freq read (CI-V 03) is fired at stream-open; its reply lands
+        # asynchronously — wait briefly so the engine can seed AE on the
+        # rig's real band instead of the sim default.
+        end = time.monotonic() + 3.0
+        while time.monotonic() < end:
+            if self._civ and self._civ.freq_hz:
+                return float(self._civ.freq_hz)
+            time.sleep(0.1)
+        return None
+
+    def initial_mode(self):
+        return self._civ.mode if self._civ else None

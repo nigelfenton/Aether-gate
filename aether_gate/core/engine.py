@@ -765,6 +765,20 @@ class Radio:
         self.center_mhz, self.span_mhz = CENTER_MHZ, SPAN_MHZ   # track AE's actual pan view
         self.slice_freq = CENTER_MHZ                            # active slice freq (= VFO); mirrors slices[active]
         self.slice_mode = "USB"
+        # Aether-gate seam: a real radio knows where it's tuned — seed the pan +
+        # slice there instead of the sim default, so AE opens on the rig's band
+        # (e.g. IC-9700 on 2m, not the sim's HF default).
+        if adapter is not None:
+            try:
+                hz = adapter.initial_center_hz()
+                if hz:
+                    self.center_mhz = hz / 1e6
+                    self.slice_freq = self.center_mhz
+                    mode = getattr(adapter, "initial_mode", lambda: None)()
+                    if mode:
+                        self.slice_mode = mode
+            except Exception:
+                pass
         self.slices = {}            # index -> {"freq":MHz,"mode":str,"active":bool}; AE adds via +RX (slice create)
         self.active_slice = 0       # the slice the pan/waterfall/primary carrier follow
         self.conn = None            # active TCP conn (so the control panel can push TX status)
@@ -1525,7 +1539,14 @@ class Radio:
                 #   not min(intens): a flat pattern (step/impulse/ramp) has min==max, so min(intens) would
                 #   set the black level AT the signal and AE blanks the whole waterfall row. The true floor
                 #   keeps flat-high rows bright and still feeds AE's #3586 auto-black path correctly.
-                self.last_vfo_dbm = levels[ctx.center]              # active slice (pan centre) -> rack strip
+                # Aether-gate seam: a real radio has a real S-meter — prefer it
+                # over the spectrum level at the pan centre (sim behaviour).
+                m = None
+                if self.adapter is not None:
+                    try: m = self.adapter.read_meters()
+                    except Exception: m = None
+                self.last_vfo_dbm = m.s_meter_dbm if m is not None \
+                    else levels[ctx.center]                         # active slice (pan centre) -> rack strip
                 try:
                     for pid, pan in list(self.pans.items()):        # AE stacks one panadapter per receiver
                         low_hz = (self._pan_center(pid) - self.span_mhz / 2) * 1e6
