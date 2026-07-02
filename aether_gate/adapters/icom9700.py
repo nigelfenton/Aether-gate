@@ -310,8 +310,13 @@ class Icom9700Adapter(RadioAdapter):
             self._smeter_sent_at = now
         if now - self._freq_polled_at >= 1.0:
             # keep freq_hz fresh even when the rig's CI-V transceive is off,
-            # so the dial drives AE (see engine radio->AE sync)
-            self._civ._send_civ(bytes([0x03]))
+            # so the dial drives AE (see engine radio->AE sync).
+            # Poll the SELECTED-VFO freq (25 00), NOT plain 03: 03 reads MAIN
+            # only, so a band change that lands on the SUB receiver never
+            # moved freq_hz (2026-07-02: "changing to 440 on IC didn't change
+            # AE"). 25 00 tracks whichever receiver is selected, matching how
+            # we tune (set_freq_hz uses 25 00 too).
+            self._civ._send_civ(bytes([0x25, 0x00]))
             self._freq_polled_at = now
         raw = self._civ.smeter_raw
         if raw is None:
