@@ -373,10 +373,10 @@ class Icom9700Adapter(RadioAdapter):
         # within seconds (deaf session). The radio can't sustain that. Now:
         # ONE read per ~0.4 s tick in round-robin, S-meter ~2.5 Hz, so the
         # sustained CI-V rate is a few msg/s the radio tolerates.
-        if now - self._smeter_sent_at >= 0.4:
-            self._civ.poll_smeter()                        # 15 02 (S-meter) ~2.5 Hz
+        if now - self._smeter_sent_at >= 1.0:
+            self._civ.poll_smeter()                        # 15 02 (S-meter) ~1 Hz
             self._smeter_sent_at = now
-        if now - self._freq_polled_at >= 0.4:
+        if now - self._freq_polled_at >= 1.0:
             self._freq_polled_at = now
             # round-robin ONE read per tick (not a 5-read burst): full cycle
             # of freq/mode/sub every ~2 s — plenty fresh for dial/band sync.
@@ -389,27 +389,28 @@ class Icom9700Adapter(RadioAdapter):
             self._civ._send_civ(READS[i % len(READS)])
             self._read_rr = i + 1
 
-            # WATCHDOG (rate-limited so IT doesn't add to the flood):
-            #  tier 1: scope frames stalled but reads fresh -> re-enable scope,
-            #          but only every ~4 s (SDR9700-style), not every tick.
-            #  tier 2: freq reads frozen ≥8 s -> session deaf -> reconnect flag.
+            # WATCHDOG — liveness is measured by SCOPE FRAME PROGRESS, NOT by
+            # whether the freq VALUE changed. (Bug 2026-07-02: the old check
+            # reset its timer only when freq_hz *changed*, so a STATIONARY rig —
+            # freq never changing — looked "deaf" after 8 s and we tore down a
+            # perfectly healthy session ourselves. Pings/echo were fine the
+            # whole time; the session was never actually deaf.) The scope
+            # streams continuously while the session is alive; frozen frames =
+            # real trouble.
             frames = self._civ.frames
-            scope_stalled = (frames == getattr(self, "_scope_frames_last", -1))
-            self._scope_frames_last = frames
-            fz = self._civ.freq_hz
-            if fz != getattr(self, "_wd_freq_last", None):
-                self._wd_freq_last = fz
-                self._wd_freq_t = now                      # reads are advancing
-            reads_frozen_for = now - getattr(self, "_wd_freq_t", now)
-            if scope_stalled and reads_frozen_for < 7.0 \
+            if frames != getattr(self, "_wd_frames_last", -1):
+                self._wd_frames_last = frames
+                self._wd_frames_t = now                    # scope is flowing = session alive
+            frozen_for = now - getattr(self, "_wd_frames_t", now)
+            if 3.0 <= frozen_for < 10.0 \
                     and now - getattr(self, "_scope_reenable_t", 0) >= 4.0:
-                self._civ.enable_scope()                   # tier 1: nudge, rate-limited
+                self._civ.enable_scope()                   # tier 1: nudge the scope
                 self._scope_reenable_t = now
-                print("[scope] stream stalled -> re-enabling", flush=True)
-            elif reads_frozen_for >= 8.0 and not getattr(self, "_want_reconnect", False):
+                print("[scope] frames stalled -> re-enabling", flush=True)
+            elif frozen_for >= 12.0 and not getattr(self, "_want_reconnect", False):
                 self._want_reconnect = True                # tier 2: session deaf -> reconnect
-                print(f"[civ] session deaf {reads_frozen_for:.0f}s "
-                      f"(reads frozen) -> requesting reconnect", flush=True)
+                print(f"[civ] scope frozen {frozen_for:.0f}s "
+                      f"-> requesting reconnect", flush=True)
         raw = self._civ.smeter_raw
         if raw is None:
             return None
