@@ -134,9 +134,13 @@ class Icom9700Adapter(RadioAdapter):
         # IC-9700 covers 2m/70cm/23cm; RX-only here (no TX/PTT wired -> never keys the rig).
         # Span honesty: the 9700 scope does ±2.5k..±500k -> pan width 5 kHz..1 MHz;
         # don't let AE zoom the axis past what the scope can actually show.
+        # bands: AE BandDefs vocabulary — the registry's "70cm" is AE's "440".
+        # With a radio-declared-bands AE the menu offers exactly these three;
+        # older AE ignores the key and falls back to the FLEX-6700's 2m.
         self.capabilities = AdapterCaps(model=model, serial=serial, station=station,
                                         tx_capable=False,
-                                        min_span_hz=5_000.0, max_span_hz=1_000_000.0)
+                                        min_span_hz=5_000.0, max_span_hz=1_000_000.0,
+                                        bands=("2m", "440", "23cm"))
         self._handler = None
         self._civ = None
         self._span_half_hz = 500_000      # what the scope is set to (± half-width)

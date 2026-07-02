@@ -84,6 +84,9 @@ BAND_CENTERS_MHZ = {
     "160": 1.900, "80": 3.750, "60": 5.357, "40": 7.150, "30": 10.125,
     "20": 14.150, "17": 18.118, "15": 21.225, "12": 24.940, "10": 28.850,
     "6": 50.150, "4": 70.200, "2": 145.000, "wwv": 10.000, "gen": 14.150,
+    # VHF/UHF forms AE may send for radio-declared bands (BandDefs names)
+    "2m": 145.000, "4m": 70.200, "1.25m": 223.500, "440": 435.000,
+    "70cm": 435.000, "33cm": 915.000, "23cm": 1270.000,
 }
 PCC_FFT, PCC_WF, PCC_METER = 0x8003, 0x8004, 0x8002
 METER_SID = 0x46000000       # meter VITA stream id (AE routes meters by PCC, not by sid)
@@ -735,11 +738,13 @@ class Radio:
         self.radio_id = radio_id
         self.serial = f"FLEXSIM{radio_id:02d}"
         self.station = "Aether-gate"                    # name AE displays (default nickname)
+        self.bands = ()                                 # radio-declared band set ("bands=" advert)
         if adapter is not None and getattr(adapter, "capabilities", None) is not None:
             if adapter.capabilities.serial:
                 self.serial = adapter.capabilities.serial   # distinct serial in AE's chooser
             if adapter.capabilities.station:
                 self.station = adapter.capabilities.station  # distinct station label in AE
+            self.bands = tuple(getattr(adapter.capabilities, "bands", ()) or ())
         self.client_handle = HANDLE + radio_id   # NB: NOT self.handle — that's the method!
         self.handle_hex = f"{self.client_handle:08X}"
         self.pan_id = PAN_ID + radio_id * 16     # FFT stream-id BASE; AE stacks a panadapter per +RX,
@@ -857,7 +862,8 @@ class Radio:
                        f"serial={self.serial} version={VERSION} "
                        f"ip={self.ip} port={self.port} status=Available mf_enable=1 "
                        f"slices={self.max_slices} pans={self.max_slices} "   # capacity -> AE enables +RX
-                       f"max_licensed_version=3").encode()   # rebuilt each tick -> live model change propagates
+                       + (f"bands={','.join(self.bands)} " if self.bands else "")   # radio-declared band set
+                       + f"max_licensed_version=3").encode()   # rebuilt each tick -> live model change propagates
                 # AE's RadioDiscovery.cpp displays `nickname` (not `name`) as the chooser/status label
                 # (RadioDiscovery.h: .arg(model, nickname, callsign)). Send both so the label populates.
                 for d in dests:
@@ -1237,7 +1243,8 @@ class Radio:
         self.status(conn, f"radio slices={len(self.slices)} max_slices={self.max_slices} "
                           f"panadapters={self.max_slices} "
                           f"lineout_gain=50 lineout_mute=0 headphone_gain=50 headphone_mute=0 "
-                          f"callsign=SDRSIM nickname={self.station}")
+                          + (f"bands={','.join(self.bands)} " if self.bands else "")
+                          + f"callsign=SDRSIM nickname={self.station}")
         log(f"[->] radio status: slices(in-use)={len(self.slices)} max_slices={self.max_slices}")
 
     def emit_meter_status(self, conn):

@@ -36,6 +36,11 @@ class AdapterCaps:
     tx_capable: bool = False       # source can transmit (real transceiver) vs RX-only (dongle/WebSDR)
     min_span_hz: float = 48_000.0  # narrowest span the source can render
     max_span_hz: float = 14_000_000.0
+    # Bands the REAL radio supports, in AE BandDefs names ("2m","440","23cm").
+    # Advertised via the discovery/status "bands=" key so AE's band menu offers
+    # the radio's true set instead of the impersonated Flex model's (needs AE
+    # with the radio-declared-bands feature; older AE ignores the key).
+    bands: tuple = ()
 
 
 @dataclass
