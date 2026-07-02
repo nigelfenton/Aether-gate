@@ -1233,9 +1233,56 @@ class Radio:
         sl = self.slices.get(idx)
         if not sl: return
         pid = sl.get("pan") or self._primary_pan()
+        # index_letter labels the flag AE draws (A/B/...) so two slices on one
+        # pan are distinguishable (scout: SliceModel reads index_letter).
+        letter = chr(ord('A') + (idx if idx < 26 else 0))
         self.status(conn, f"slice {idx} client_handle=0x{self.handle_hex} pan=0x{pid:08X} "
+                          f"index_letter={letter} "
                           f"RF_frequency={sl['freq']:.6f} mode={sl['mode']} in_use=1 "
                           f"active={1 if sl['active'] else 0}")
+
+    # SUB slice reserved index: primary receiver is slice 0, SUB is slice 1.
+    SUB_SLICE = 1
+
+    def _sync_sub_slice(self):
+        """Mirror the rig's SUB receiver (if active) as slice 1 on the primary's
+        pan. Read-only (Stage 1): freq/mode follow the radio; created when the
+        rig's dualwatch turns on, removed when it turns off. Both slices land on
+        ONE pan so AE renders them as two flags on a single waterfall (the
+        selected receiver's — the 9700 only streams one scope over LAN)."""
+        a = self.adapter
+        if not hasattr(a, "sub_active"):
+            return
+        sub_on = a.sub_active()
+        sub = self.slices.get(self.SUB_SLICE)
+
+        if not sub_on:
+            if sub is not None:                            # dualwatch off -> retire slice 1
+                self.slices.pop(self.SUB_SLICE, None)
+                self.status(self.conn, f"slice {self.SUB_SLICE} in_use=0")
+                log("[dual] SUB receiver off -> removed slice 1")
+            return
+
+        f = a.sub_freq_hz()
+        if not f:
+            return
+        fmhz = f / 1e6
+        m = a.sub_mode()
+        mode = m if m in ("LSB", "USB", "AM", "CW", "FM", "RTTY", "DV") else "FM"
+        pid = None
+        prim = self.slices.get(self.active_slice)          # SUB shares the primary's pan
+        if prim:
+            pid = prim.get("pan")
+        pid = pid or self._primary_pan()
+
+        if sub is None:                                    # dualwatch on -> create slice 1
+            self.slices[self.SUB_SLICE] = {"freq": fmhz, "mode": mode,
+                                           "active": False, "pan": pid, "sub": True}
+            self.emit_slice_status(self.conn, self.SUB_SLICE)
+            log(f"[dual] SUB receiver on -> slice 1 @ {fmhz:.5f} {mode} on pan 0x{pid:08X}")
+        elif abs(sub["freq"] - fmhz) > 5e-6 or sub["mode"] != mode or sub.get("pan") != pid:
+            sub["freq"], sub["mode"], sub["pan"] = fmhz, mode, pid   # follow the rig
+            self.emit_slice_status(self.conn, self.SUB_SLICE)
 
     def emit_radio_status(self, conn):
         # Capability advert. AE computes MaxSlices/SlicesRemaining from the radio status;
@@ -1603,6 +1650,17 @@ class Radio:
                             f"-> {rmhz:.5f} MHz {sl['mode']}")
                 except Exception:
                     pass   # dial sync must never kill the stream thread
+
+                # --- DUAL-SLICE (Stage 1: present the SUB receiver, read-only) ---
+                # If the adapter reports a SUB receiver active (9700 dualwatch),
+                # mirror it as a SECOND slice on the SAME pan as the primary, so
+                # AE draws both as frequency flags on the one waterfall. Slice
+                # index 1 is reserved for SUB. Read-only for now: freq/mode
+                # follow the rig; AE-side tuning of it comes in Stage 2.
+                try:
+                    self._sync_sub_slice()
+                except Exception:
+                    pass   # SUB-slice sync must never kill the stream thread
 
             # TX meters every frame: real power/SWR while keyed, ~0 W / 1.0 SWR when not,
             # so AE's meter decays back to zero on de-key. CW/CWX key power per element.

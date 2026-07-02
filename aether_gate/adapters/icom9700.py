@@ -75,7 +75,9 @@ class _Ic9700Stream(Ic9700Civ):
         # of truth for what AE sees and what we tune.
         self.freq_hz = None            # SELECTED vfo freq (25 00) — the authority
         self.mode = None               # SELECTED vfo mode (26 00)
-        self.other_freq_hz = None      # UNSELECTED vfo freq (25 01) — for dual-slice later
+        self.other_freq_hz = None      # UNSELECTED (SUB) vfo freq (25 01) — dual-slice
+        self.other_mode = None         # UNSELECTED (SUB) vfo mode (26 01) — dual-slice
+        self.dualwatch = None          # 07 D2: True/False = SUB receiver active (dual-slice)
         self.smeter_raw = None         # last CI-V 15 02 reading, 0..255
         self._tune_target = None       # latest AE-requested freq (tuner thread chases it)
         self._tune_evt = threading.Event()
@@ -97,6 +99,8 @@ class _Ic9700Stream(Ic9700Civ):
         self._send_civ(bytes([0x25, 0x00]))
         self._send_civ(bytes([0x25, 0x01]))
         self._send_civ(bytes([0x26, 0x00]))
+        self._send_civ(bytes([0x26, 0x01]))       # other-vfo mode (dual-slice)
+        self._send_civ(bytes([0x07, 0xD2]))       # dualwatch on/off (dual-slice)
 
     def _dispatch(self, d):
         if d.find(b"\x27\x00\x00") >= 0:        # scope waveform frame
@@ -127,9 +131,15 @@ class _Ic9700Stream(Ic9700Civ):
                 elif cmd == 0x01 and len(data) >= 1:
                     # 01 = mode transceive (selected vfo)
                     self.mode = CIV_TO_MODE.get(data[0])
-                elif cmd == 0x26 and len(data) >= 2 and data[0] == 0x00:
-                    # 26 00 = selected-vfo mode/data-mode read
-                    self.mode = CIV_TO_MODE.get(data[1])
+                elif cmd == 0x26 and len(data) >= 2:
+                    # 26 00 = selected-vfo mode; 26 01 = other (SUB) vfo mode
+                    if data[0] == 0x00:
+                        self.mode = CIV_TO_MODE.get(data[1])
+                    elif data[0] == 0x01:
+                        self.other_mode = CIV_TO_MODE.get(data[1])
+                elif cmd == 0x07 and len(data) >= 2 and data[0] == 0xD2:
+                    # dualwatch on/off — the trigger for the SUB slice
+                    self.dualwatch = bool(data[1])
                 elif cmd == 0x15 and len(data) >= 3 and data[0] == 0x02:
                     # S-meter reply: 15 02 <2-byte BCD 0000-0255>
                     self.smeter_raw = (data[1] >> 4) * 1000 + (data[1] & 0xF) * 100 + \
@@ -341,7 +351,9 @@ class Icom9700Adapter(RadioAdapter):
             # other vfo, kept fresh for the future dual-slice model.
             self._civ._send_civ(bytes([0x25, 0x00]))
             self._civ._send_civ(bytes([0x26, 0x00]))
-            self._civ._send_civ(bytes([0x25, 0x01]))
+            self._civ._send_civ(bytes([0x25, 0x01]))    # SUB freq
+            self._civ._send_civ(bytes([0x26, 0x01]))    # SUB mode
+            self._civ._send_civ(bytes([0x07, 0xD2]))    # dualwatch on/off
             self._freq_polled_at = now
         raw = self._civ.smeter_raw
         if raw is None:
@@ -374,3 +386,20 @@ class Icom9700Adapter(RadioAdapter):
 
     def radio_mode(self):
         return self._civ.mode if self._civ else None
+
+    # --- dual-receiver (SUB) — drives the second slice -------------------
+    def sub_active(self):
+        """True when the rig's SUB receiver (dualwatch) is on -> AE gets a 2nd slice."""
+        return bool(self._civ and self._civ.dualwatch)
+
+    def sub_freq_hz(self):
+        return self._civ.other_freq_hz if self._civ else None
+
+    def sub_mode(self):
+        return self._civ.other_mode if self._civ else None
+
+    def set_sub_freq_hz(self, hz):
+        """Tune the SUB receiver (25 01) WITHOUT disturbing MAIN — proven on HW
+        (dev/ic9700_rxaddr Method A). Used by the engine when AE tunes slice B."""
+        if self._civ:
+            self._civ._send_civ(bytes([0x25, 0x01]) + _encode_bcd(int(hz)))
