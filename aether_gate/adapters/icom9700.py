@@ -129,10 +129,12 @@ class _Ic9700Stream(Ic9700Civ):
         # command thread here seized the whole gate (2026-07-01 lockup).
         # Record the latest target and let the tuner thread chase it.
         self._tune_target = int(hz)
+        print(f"[tuner] target <- {hz/1e6:.5f} MHz", flush=True)
         if self._tuner is None or not self._tuner.is_alive():
             self._tuner = threading.Thread(target=self._tuner_loop, daemon=True,
                                            name="ic9700-tuner")
             self._tuner.start()
+            print("[tuner] thread started", flush=True)
         self._tune_evt.set()
 
     def _tuner_loop(self):
@@ -140,23 +142,37 @@ class _Ic9700Stream(Ic9700Civ):
         # Cross-band recipe proven on HW 2026-07-01 (dev/ic9700_xband2):
         # 25 00 tunes same-band and any UNHELD band; a band parked on the
         # SUB receiver is refused (FA) — swap main/sub (07 B0) and retry.
+        print(f"[tuner] loop running (_run={self._run})", flush=True)
         while self._run:
             self._tune_evt.wait(timeout=0.5)
             self._tune_evt.clear()
             tgt = self._tune_target
             if tgt is None:
                 continue
+            # A target is chased ONCE and then cleared — a lingering setpoint
+            # must never fight the user's hand on the rig's dial (2026-07-01:
+            # the stale target kept snapping the rig back after every dial turn).
             if self.freq_hz is not None and abs(self.freq_hz - tgt) < 1:
+                if self._tune_target == tgt:
+                    self._tune_target = None
                 continue
-            if self._try_freq(tgt):
+            ok = self._try_freq(tgt)
+            print(f"[tuner] 25 00 {tgt/1e6:.5f} -> {'FB' if ok else 'FA'}", flush=True)
+            if ok:
                 self.freq_hz = tgt
+                if self._tune_target == tgt:
+                    self._tune_target = None    # done — release the rig
                 continue
             if self._tune_target != tgt:
                 continue                        # target moved on — chase that instead
+            print("[tuner] band held by SUB -> 07 B0 swap + retry", flush=True)
             self._send_civ(bytes([0x07, 0xB0]))  # swap main/sub, then retry
             time.sleep(0.4)
             if self._try_freq(tgt):
                 self.freq_hz = tgt
+                print(f"[tuner] tuned {tgt/1e6:.5f} after swap", flush=True)
+            if self._tune_target == tgt:
+                self._tune_target = None        # chased once, win or lose — never re-fight
 
     def set_mode_civ(self, mode_byte, filt=0x01):
         self._send_civ(bytes([0x06, mode_byte, filt]))
