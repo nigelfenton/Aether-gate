@@ -777,8 +777,12 @@ class Radio:
                     mode = getattr(adapter, "initial_mode", lambda: None)()
                     if mode:
                         self.slice_mode = mode
-            except Exception:
-                pass
+                    log(f"[adapter] seeded pan/slice from radio: "
+                        f"{self.center_mhz:.5f} MHz {self.slice_mode}")
+                else:
+                    log("[adapter] no initial radio freq (seed skipped, sim default)")
+            except Exception as e:
+                log(f"[adapter] seed failed: {e!r}")
         self.slices = {}            # index -> {"freq":MHz,"mode":str,"active":bool}; AE adds via +RX (slice create)
         self.active_slice = 0       # the slice the pan/waterfall/primary carrier follow
         self.conn = None            # active TCP conn (so the control panel can push TX status)
