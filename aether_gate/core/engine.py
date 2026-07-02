@@ -1249,64 +1249,95 @@ class Radio:
     # SUB slice reserved index: primary receiver is slice 0, SUB is slice 1.
     SUB_SLICE = 1
 
-    def _sync_sub_slice(self):
-        """Mirror the rig's SUB receiver (if active) as slice 1 on its OWN
-        stacked panadapter (Stage A). freq/mode follow the radio; the SUB pan +
-        slice are created when the SUB receiver comes on and removed when it
-        goes off. Two STACKED pans (one per receiver, each framed on its own
-        band) — but only the SELECTED receiver's scope streams over LAN, so the
-        live waterfall belongs to whichever pan is the selected/TX receiver;
-        the other pan's waterfall is idle until you swap select/TX to it
-        (routing handled in the stream loop, Stage B)."""
+    def _sync_receivers(self):
+        """Radio -> AE, both receivers. Reads the rig's active receivers and
+        matches each to a slice by FREQUENCY CONTINUITY (nearest existing
+        slice), not by selected/unselected — the CI-V "selected" read (25 00)
+        flip-flops between MAIN and SUB when both run, which whipped the slices
+        between bands. Slice 0 is pinned to MAIN (first receiver); slice 1 is
+        the SUB, on its own stacked pan, created/removed as SUB comes and goes.
+        Only the selected receiver's scope streams over LAN, so the SUB pan's
+        waterfall is a floor until you select it (routing in the stream loop)."""
         a = self.adapter
-        if not hasattr(a, "sub_active"):
+        if not hasattr(a, "receivers"):
             return
-        sub_on = a.sub_active()
-        sub = self.slices.get(self.SUB_SLICE)
+        rxs = a.receivers()                                # unordered {freq_hz,mode} list
+        if not rxs:
+            return
 
-        if not sub_on:
-            if sub is not None:                            # SUB off -> retire slice 1 + its pan
-                spid = sub.get("pan")
-                prim = self._primary_pan()
+        def _mode(m):
+            return m if m in ("LSB", "USB", "AM", "CW", "FM", "RTTY", "DV") else "FM"
+
+        # CONTINUITY MATCH: assign each receiver reading to the slice it's
+        # closest to (0=primary/MAIN, 1=SUB), so a "selected" flip-flop can't
+        # swap which slice a band lands on. slice 0 always exists; slice 1
+        # exists only while SUB is active.
+        slice0 = self.slices.get(0)
+        f0 = slice0["freq"] if slice0 else (rxs[0]["freq_hz"] / 1e6)
+        sub = self.slices.get(self.SUB_SLICE)
+        f1 = sub["freq"] if sub else None
+
+        main_rx, sub_rx = None, None
+        if len(rxs) == 1:
+            main_rx = rxs[0]                                # only MAIN active
+        else:
+            # two readings — put the one nearer slice-0's band on MAIN, other on SUB
+            a0 = abs(rxs[0]["freq_hz"] / 1e6 - f0)
+            a1 = abs(rxs[1]["freq_hz"] / 1e6 - f0)
+            if a0 <= a1:
+                main_rx, sub_rx = rxs[0], rxs[1]
+            else:
+                main_rx, sub_rx = rxs[1], rxs[0]
+
+        # --- slice 0 = MAIN receiver (always present) --------------------
+        mfmhz = main_rx["freq_hz"] / 1e6
+        sl0 = self.slices.get(0)
+        if sl0 is not None and abs(sl0["freq"] - mfmhz) > 5e-6:
+            sl0["freq"] = mfmhz
+            sl0["mode"] = _mode(main_rx["mode"])
+            if self.active_slice == 0:
+                self.slice_freq, self.slice_mode = sl0["freq"], sl0["mode"]
+            pid0 = sl0.get("pan") or self._primary_pan()
+            if pid0 in self.pans:
+                self.pans[pid0]["center"] = mfmhz
+                self.emit_pan_status(self.conn, pid0)
+            self.emit_slice_status(self.conn, 0)
+            log(f"[radio->ae] MAIN -> slice 0 {mfmhz:.5f} {sl0['mode']}")
+
+        if sub_rx is None:                                 # SUB off -> retire slice 1 + its pan
+            if sub is not None:
+                spid = sub.get("pan"); prim = self._primary_pan()
                 self.slices.pop(self.SUB_SLICE, None)
                 self.status(self.conn, f"slice {self.SUB_SLICE} in_use=0")
                 if spid is not None and spid != prim:
                     swid = self.pans.get(spid, {}).get("wf_id")
-                    self.pans.pop(spid, None)              # stop streaming the SUB pan
+                    self.pans.pop(spid, None)
                     self.status(self.conn, f"display pan 0x{spid:08X} removed")
                     if swid is not None:
                         self.status(self.conn, f"display waterfall 0x{swid:08X} removed")
-                # if the SUB slice was the ACTIVE slice, hand active back to a survivor
                 if self.active_slice == self.SUB_SLICE and self.slices:
                     self.active_slice = next(iter(self.slices))
-                log("[dual] SUB receiver off -> removed slice 1 + its pan")
+                log("[dual] SUB off -> removed slice 1 + its pan")
             return
 
-        f = a.sub_freq_hz()
-        if not f:
-            return
-        fmhz = f / 1e6
-        m = a.sub_mode()
-        mode = m if m in ("LSB", "USB", "AM", "CW", "FM", "RTTY", "DV") else "FM"
-
-        if sub is None:                                    # SUB on -> create its own pan + slice 1
-            spid = self._new_pan()                         # SUB gets a SECOND, stacked panadapter
-            self.pans[spid]["center"] = fmhz               # framed on the SUB band
+        sfmhz = sub_rx["freq_hz"] / 1e6
+        smode = _mode(sub_rx["mode"])
+        if sub is None:                                    # SUB on -> create slice 1 + its pan
+            spid = self._new_pan()
+            self.pans[spid]["center"] = sfmhz
             self.pans[spid]["slice"] = self.SUB_SLICE
-            self.slices[self.SUB_SLICE] = {"freq": fmhz, "mode": mode,
+            self.slices[self.SUB_SLICE] = {"freq": sfmhz, "mode": smode,
                                            "active": False, "pan": spid, "sub": True}
-            self.emit_pan_status(self.conn, spid)          # AE stacks a 2nd panadapter (client_handle claim)
+            self.emit_pan_status(self.conn, spid)
             self.emit_slice_status(self.conn, self.SUB_SLICE)
-            log(f"[dual] SUB on -> slice 1 @ {fmhz:.5f} {mode} on NEW pan 0x{spid:08X}")
-        else:
+            log(f"[dual] SUB on -> slice 1 @ {sfmhz:.5f} {smode} on NEW pan 0x{spid:08X}")
+        elif abs(sub["freq"] - sfmhz) > 5e-6 or sub["mode"] != smode:
+            sub["freq"], sub["mode"] = sfmhz, smode
             spid = sub.get("pan")
-            moved = abs(sub["freq"] - fmhz) > 5e-6 or sub["mode"] != mode
-            if moved:
-                sub["freq"], sub["mode"] = fmhz, mode      # follow the rig
-                if spid in self.pans:
-                    self.pans[spid]["center"] = fmhz       # keep the SUB pan framed on its band
-                    self.emit_pan_status(self.conn, spid)
-                self.emit_slice_status(self.conn, self.SUB_SLICE)
+            if spid in self.pans:
+                self.pans[spid]["center"] = sfmhz
+                self.emit_pan_status(self.conn, spid)
+            self.emit_slice_status(self.conn, self.SUB_SLICE)
 
     def emit_radio_status(self, conn):
         # Capability advert. AE computes MaxSlices/SlicesRemaining from the radio status;
@@ -1667,38 +1698,9 @@ class Radio:
                     and time.time() - self._ae_drive_at > 2.0):
                 self._radio_sync_at = time.time()
                 try:
-                    rf = getattr(self.adapter, "radio_freq_hz", lambda: None)()
-                    sl = self.slices.get(self.active_slice)
-                    if rf and sl and abs(sl["freq"] * 1e6 - rf) > 5.0:
-                        rmhz = rf / 1e6
-                        sl["freq"] = rmhz
-                        self.slice_freq = rmhz
-                        rmode = getattr(self.adapter, "radio_mode", lambda: None)()
-                        if rmode in ("LSB", "USB", "AM", "CW", "FM", "RTTY"):
-                            sl["mode"] = rmode
-                            self.slice_mode = rmode
-                        pid = sl.get("pan") or self._primary_pan()
-                        pan = self.pans.get(pid)
-                        if pan is not None:
-                            pan["center"] = rmhz
-                        self.emit_slice_status(self.conn, self.active_slice)
-                        if pid is not None:
-                            self.emit_pan_status(self.conn, pid)
-                        log(f"[radio->ae] rig dial moved: slice {self.active_slice} "
-                            f"-> {rmhz:.5f} MHz {sl['mode']}")
+                    self._sync_receivers()   # radio -> AE: match RX to slices by freq continuity
                 except Exception:
-                    pass   # dial sync must never kill the stream thread
-
-                # --- DUAL-SLICE (Stage 1: present the SUB receiver, read-only) ---
-                # If the adapter reports a SUB receiver active (9700 dualwatch),
-                # mirror it as a SECOND slice on the SAME pan as the primary, so
-                # AE draws both as frequency flags on the one waterfall. Slice
-                # index 1 is reserved for SUB. Read-only for now: freq/mode
-                # follow the rig; AE-side tuning of it comes in Stage 2.
-                try:
-                    self._sync_sub_slice()
-                except Exception:
-                    pass   # SUB-slice sync must never kill the stream thread
+                    pass   # receiver sync must never kill the stream thread
 
                 # Deaf-session recovery: if the adapter's watchdog flagged a
                 # wedged CI-V session, reconnect it on a BACKGROUND thread

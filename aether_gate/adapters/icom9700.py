@@ -443,6 +443,20 @@ class Icom9700Adapter(RadioAdapter):
     def radio_mode(self):
         return self._civ.mode if self._civ else None
 
+    def receivers(self):
+        """Both active receivers as an UNORDERED list of {freq_hz, mode}: one
+        entry if only MAIN, two if SUB is also on. UNORDERED because CI-V
+        25 00/25 01 are SELECTED/UNSELECTED (not MAIN/SUB) and which is
+        "selected" flip-flops when both run — so the engine must match these to
+        slices by FREQUENCY CONTINUITY (nearest existing slice), which is
+        stable since the two receivers are always on different bands."""
+        if not self._civ:
+            return []
+        out = [{"freq_hz": self._civ.freq_hz, "mode": self._civ.mode}]
+        if self.sub_active():
+            out.append({"freq_hz": self._civ.other_freq_hz, "mode": self._civ.other_mode})
+        return [r for r in out if r["freq_hz"]]
+
     # --- dual-receiver (SUB) — drives the second slice -------------------
     def sub_active(self):
         """True when the rig's SUB receiver is operating -> AE gets a 2nd slice.
