@@ -403,3 +403,61 @@ class Icom9700Adapter(RadioAdapter):
         (dev/ic9700_rxaddr Method A). Used by the engine when AE tunes slice B."""
         if self._civ:
             self._civ._send_civ(bytes([0x25, 0x01]) + _encode_bcd(int(hz)))
+
+    # --- diagnostics: 'what the gate sees from the radio' (web panel) -----
+    @staticmethod
+    def _smeter_dbm(raw):
+        if raw is None:
+            return None
+        return (-147.0 + raw * (54.0 / 120.0)) if raw <= 120 \
+            else (-93.0 + (raw - 120) * (60.0 / 121.0))
+
+    @staticmethod
+    def _s_unit(dbm):
+        if dbm is None:
+            return None
+        if dbm >= -93.0:
+            return f"S9+{round(dbm + 93):d}"
+        return f"S{max(0, round(9 + (dbm + 93) / 6.0)):d}"
+
+    def diagnostics(self):
+        civ = self._civ
+        h = self._handler
+        authed = bool(h and h.authenticated.is_set())
+        # scope fps: frames counted since last call / elapsed
+        fps = None
+        if civ is not None:
+            now = time.monotonic()
+            last_t = getattr(self, "_diag_t", None)
+            last_n = getattr(self, "_diag_n", 0)
+            if last_t is not None and now > last_t:
+                fps = round((civ.frames - last_n) / (now - last_t), 1)
+            self._diag_t, self._diag_n = now, civ.frames
+
+        sel_dbm = self._smeter_dbm(civ.smeter_raw) if civ else None
+        vfos = []
+        if civ:
+            vfos.append({"name": "MAIN/SEL", "freq_hz": civ.freq_hz,
+                         "mode": civ.mode, "selected": True})
+            if civ.dualwatch:
+                vfos.append({"name": "SUB", "freq_hz": civ.other_freq_hz,
+                             "mode": civ.other_mode, "selected": False})
+        return {
+            "radio": "IC-9700",
+            "presented_as": self.capabilities.model,
+            "link": {"transport": "Icom RS-BA1 / CI-V LAN",
+                     "host": f"{self.radio_ip}:{self.radio_port}",
+                     "state": "authenticated" if authed else "connecting",
+                     "civ_port": (h.civ_port if h else None),
+                     "audio_port": (h.audio_port if h else None),
+                     "token": (f"0x{h.token:08x}" if h and h.token else None)},
+            "vfos": vfos,
+            "meters": {"s_meter_dbm": (round(sel_dbm, 1) if sel_dbm is not None else None),
+                       "s_unit": self._s_unit(sel_dbm),
+                       "raw": (civ.smeter_raw if civ else None)},
+            "scope": {"fps": fps, "bins": (len(civ.latest_dbm) if civ and civ.latest_dbm else None),
+                      "total_frames": (civ.frames if civ else 0)},
+            "flags": {"dualwatch": bool(civ.dualwatch) if civ else False},
+            "counters": {"tune_ok": (civ.n_fb if civ else 0),
+                         "tune_refused": (civ.n_fa if civ else 0)},
+        }

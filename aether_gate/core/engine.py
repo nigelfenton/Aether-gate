@@ -1878,12 +1878,90 @@ def live_test_set(paused=None, abort=False):
     return {"ok": True}
 
 
+# ---- radio diagnostics page: "what the gate sees from the radio" ----
+# Radio-agnostic: renders whatever keys diagnostics() returns, so Icom/Kenwood/
+# Yaesu/SDR adapters all light it up with what each one knows. Polls /diagnostics.
+RADIO_DIAG_HTML = """<!DOCTYPE html><html><head><meta charset=utf-8>
+<title>Aether-gate - radio diagnostics</title>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<style>
+ body{font-family:system-ui,sans-serif;background:#0d1117;color:#e6edf3;max-width:680px;margin:0 auto;padding:18px}
+ h1{color:#58a6ff;margin:0 0 2px;font-size:20px} .sub{color:#8b949e;font-size:13px;margin:0 0 16px}
+ .card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px 15px;margin:10px 0}
+ .card h2{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:#8b949e;margin:0 0 8px}
+ .row{display:flex;justify-content:space-between;padding:3px 0;font-size:14px;border-bottom:1px solid #21262d}
+ .row:last-child{border-bottom:none} .k{color:#adbac7} .v{color:#e6edf3;font-family:ui-monospace,monospace}
+ .big{font-size:22px;font-family:ui-monospace,monospace;color:#58a6ff}
+ .vfo{display:flex;align-items:baseline;gap:10px;padding:6px 0;border-bottom:1px solid #21262d}
+ .vfo:last-child{border-bottom:none}
+ .tag{font-size:11px;padding:2px 7px;border-radius:10px;font-weight:bold}
+ .sel{background:#1f6feb;color:#fff} .oth{background:#30363d;color:#adbac7}
+ .mode{color:#f0b34a;font-family:ui-monospace,monospace;font-size:13px}
+ .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}
+ .on{background:#3fb950} .off{background:#6e7681} .warn{background:#d29922}
+ .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 20px}
+ .stale{opacity:.45}
+</style></head><body>
+<h1>Aether-gate &mdash; radio diagnostics</h1>
+<div class=sub>Live view of what the gate sees from the real radio. <span id=age></span></div>
+<div id=body>connecting&hellip;</div>
+<script>
+function fmtHz(hz){if(hz==null)return '&mdash;';var s=String(Math.round(hz)).padStart(7,'0');
+  return (s.slice(0,-6)||'0')+'.'+s.slice(-6,-3)+'.'+s.slice(-3)+' MHz';}
+function row(k,v){return '<div class=row><span class=k>'+k+'</span><span class=v>'+(v==null?'&mdash;':v)+'</span></div>';}
+function render(d){
+  var h='';
+  // link / identity
+  var L=d.link||{};
+  var st=(L.state==='authenticated');
+  h+='<div class=card><h2>'+(d.radio||'radio')+(d.presented_as?(' &rarr; presents as '+d.presented_as):'')+'</h2>';
+  h+='<div class=row><span class=k>link</span><span class=v><span class="dot '+(st?'on':'warn')+'"></span>'+(L.state||'?')+'</span></div>';
+  h+=row('transport',L.transport);h+=row('host',L.host);
+  if(L.civ_port)h+=row('civ / audio port',L.civ_port+' / '+(L.audio_port||'?'));
+  if(L.token)h+=row('session token',L.token);
+  h+='</div>';
+  // vfos
+  if(d.vfos&&d.vfos.length){h+='<div class=card><h2>receivers</h2>';
+    d.vfos.forEach(function(v){
+      h+='<div class=vfo><span class="tag '+(v.selected?'sel':'oth')+'">'+(v.name||'')+'</span>'
+        +'<span class=big>'+fmtHz(v.freq_hz)+'</span><span class=mode>'+(v.mode||'')+'</span></div>';});
+    h+='</div>';}
+  // meters + scope + flags + counters as a grid
+  h+='<div class=grid>';
+  var M=d.meters||{},S=d.scope||{},F=d.flags||{},C=d.counters||{};
+  h+='<div class=card><h2>s-meter</h2>'+row('signal',(M.s_meter_dbm!=null?(M.s_meter_dbm+' dBm'):null))
+     +row('s-unit',M.s_unit)+row('raw',M.raw)+'</div>';
+  h+='<div class=card><h2>band scope</h2>'+row('fps',S.fps)+row('bins',S.bins)+row('total frames',S.total_frames)+'</div>';
+  var fl='';for(var k in F)fl+='<div class=row><span class=k>'+k+'</span><span class=v>'
+     +'<span class="dot '+(F[k]?'on':'off')+'"></span>'+(F[k]?'ON':'off')+'</span></div>';
+  h+='<div class=card><h2>flags</h2>'+(fl||'&mdash;')+'</div>';
+  h+='<div class=card><h2>command acks</h2>'+row('accepted (FB)',C.tune_ok)+row('refused (FA)',C.tune_refused)+'</div>';
+  h+='</div>';
+  // gate <-> AE
+  if(d.gate){var G=d.gate;h+='<div class=card><h2>gate &rarr; AetherSDR</h2>';
+    h+='<div class=row><span class=k>AE connected</span><span class=v><span class="dot '+(G.ae_connected?'on':'off')+'"></span>'
+      +(G.ae_connected?('yes'+(G.ae_peer?(' ('+G.ae_peer+')'):'')):'no')+'</span></div>';
+    h+=row('presented model',G.model);h+=row('station',G.station);
+    var sl=G.slices||{},sk=Object.keys(sl);
+    sk.forEach(function(i){var s=sl[i];h+=row('slice '+i+(s.sub?' (SUB)':''),fmtHz(s.freq*1e6)+' '+s.mode);});
+    h+='</div>';}
+  document.getElementById('body').innerHTML=h;
+}
+var fails=0;
+function poll(){fetch('/diagnostics').then(function(r){return r.json();}).then(function(d){
+  fails=0;document.getElementById('age').textContent='';render(d);
+}).catch(function(){fails++;if(fails>2)document.getElementById('body').classList.add('stale');});}
+poll();setInterval(poll,1000);
+</script></body></html>"""
+
+
 # ---- live control panel (web UI served by the sim; drive from the host browser) ----
 CONTROL_HTML = """<!DOCTYPE html><html><head><meta charset=utf-8><title>Aether-gate signal control</title>
 <style>body{{font-family:sans-serif;background:#111;color:#ddd;padding:18px;max-width:440px}}
 h2{{color:#5cf}} label{{display:block;margin:16px 0 4px}} select,input[type=range]{{width:380px}}
 .v{{color:#5cf;font-weight:bold}}</style></head><body>
 <h2>Aether-gate &mdash; signal control</h2>
+<div style="margin:0 0 10px"><a href="/radio" style="color:#5cf;font-size:13px;text-decoration:none">&#128225; Radio diagnostics &mdash; what the gate sees from the radio &rarr;</a></div>
 <div id=statusbar style="display:flex;align-items:center;gap:12px;background:#15202b;border:1px solid #243;border-radius:6px;padding:10px 12px;margin:0 0 14px">
   <button id=gobtn onclick="togglePause()" style="font-size:15px;font-weight:bold;padding:7px 16px;border:none;border-radius:5px;cursor:pointer;background:#c33;color:#fff">&#9632; Stop</button>
   <div style="line-height:1.4">
@@ -2164,6 +2242,22 @@ def start_control_server(radio, port):
                     "tx": radio.tx_on,
                     "meter_dbm": round(radio.last_vfo_dbm, 1),
                 })
+            # ---- radio diagnostics: 'what the gate sees from the radio' ----
+            if u.path == "/diagnostics":
+                a = radio.adapter
+                d = a.diagnostics() if a is not None else {"radio": "none (pattern source)"}
+                d["gate"] = {"model": radio.model, "station": radio.station,
+                             "ip": radio.ip, "ae_connected": radio.conn is not None,
+                             "ae_peer": radio.ae_peer_ip,
+                             "slices": {str(i): {"freq": s["freq"], "mode": s["mode"],
+                                                 "sub": s.get("sub", False)}
+                                        for i, s in radio.slices.items()}}
+                return self._json(d)
+            if u.path == "/radio":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers(); self.wfile.write(RADIO_DIAG_HTML.encode()); return
             # ---- test-bench routes (JSON / report files) ----
             if u.path == "/fixtures":
                 return self._json(list_fixtures())

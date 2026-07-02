@@ -91,6 +91,21 @@ class RadioAdapter(ABC):
         """Optional S-meter / TX state. Default: quiet RX."""
         return Meters()
 
+    def diagnostics(self) -> dict:
+        """Live 'what the gate sees from the radio' snapshot for the diagnostic
+        web panel. Radio-agnostic shape so ANY adapter (Icom/Kenwood/Yaesu/SDR)
+        fills what it knows; the panel renders whatever keys are present.
+        Recommended keys (all optional):
+          radio    : model / label string, e.g. "IC-9700"
+          link     : {"transport","host","state","detail"} connection/auth
+          vfos     : [{"name","freq_hz","mode","selected":bool}, ...]
+          meters   : {"s_meter_dbm", ...}
+          scope    : {"fps", "bins", "span_hz"}
+          flags    : {"dualwatch":bool, ...} radio-specific booleans
+          counters : {"tune_ok", "tune_refused", ...}
+        Default: just the adapter class name (nothing live)."""
+        return {"radio": type(self).__name__}
+
     def wants_tx(self, ctx):
         """Return True/False to assert TX this frame, or None to leave TX alone."""
         return None
