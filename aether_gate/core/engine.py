@@ -1931,7 +1931,11 @@ function render(d){
   var M=d.meters||{},S=d.scope||{},F=d.flags||{},C=d.counters||{};
   h+='<div class=card><h2>s-meter</h2>'+row('signal',(M.s_meter_dbm!=null?(M.s_meter_dbm+' dBm'):null))
      +row('s-unit',M.s_unit)+row('raw',M.raw)+'</div>';
-  h+='<div class=card><h2>band scope</h2>'+row('fps',S.fps)+row('bins',S.bins)+row('total frames',S.total_frames)+'</div>';
+  var scDot=(S.live?'on':(S.fps===0?'warn':'off'));
+  var scTxt=(S.live?('LIVE '+S.fps+' fps'):(S.fps===0?'STALLED':'&mdash;'));
+  h+='<div class=card><h2>band scope</h2>'
+     +'<div class=row><span class=k>stream</span><span class=v><span class="dot '+scDot+'"></span>'+scTxt+'</span></div>'
+     +row('bins',S.bins)+row('total frames',S.total_frames)+'</div>';
   var fl='';for(var k in F)fl+='<div class=row><span class=k>'+k+'</span><span class=v>'
      +'<span class="dot '+(F[k]?'on':'off')+'"></span>'+(F[k]?'ON':'off')+'</span></div>';
   h+='<div class=card><h2>flags</h2>'+(fl||'&mdash;')+'</div>';

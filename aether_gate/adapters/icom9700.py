@@ -354,6 +354,15 @@ class Icom9700Adapter(RadioAdapter):
             self._civ._send_civ(bytes([0x25, 0x01]))    # SUB freq
             self._civ._send_civ(bytes([0x26, 0x01]))    # SUB mode
             self._civ._send_civ(bytes([0x07, 0xD2]))    # dualwatch on/off
+            # SCOPE WATCHDOG: rig band/VFO changes can silently drop the scope
+            # stream (frames stop -> AE's waterfall freezes though the control
+            # plane stays alive). If no new scope frames arrived since last tick,
+            # re-fire the scope-enable set (SDR9700 does the same on a timer).
+            frames = self._civ.frames
+            if frames == getattr(self, "_scope_frames_last", -1):
+                self._civ.enable_scope()
+                print("[scope] stream stalled -> re-enabling", flush=True)
+            self._scope_frames_last = frames
             self._freq_polled_at = now
         raw = self._civ.smeter_raw
         if raw is None:
@@ -469,7 +478,9 @@ class Icom9700Adapter(RadioAdapter):
             "meters": {"s_meter_dbm": (round(sel_dbm, 1) if sel_dbm is not None else None),
                        "s_unit": self._s_unit(sel_dbm),
                        "raw": (civ.smeter_raw if civ else None)},
-            "scope": {"fps": fps, "bins": (len(civ.latest_dbm) if civ and civ.latest_dbm else None),
+            "scope": {"fps": fps,
+                      "live": (fps is not None and fps > 0.5),
+                      "bins": (len(civ.latest_dbm) if civ and civ.latest_dbm else None),
                       "total_frames": (civ.frames if civ else 0)},
             "flags": {"sub_receiver": sub_on,
                       "dualwatch_reg": bool(civ.dualwatch) if civ else False},
