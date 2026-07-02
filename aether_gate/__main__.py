@@ -37,7 +37,7 @@ def build_adapter(name, args):
         serial = args.serial if args.serial != "GATE0001" else "GATE9700"
         station = args.station if args.station != "aether-gate 1" else "aether-gate 9700"
         return cls(radio_ip=args.radio_ip, username=args.user, password=args.pw,
-                   local_ip=args.ip, radio_port=args.radio_port,
+                   local_ip=args.radio_local_ip, radio_port=args.radio_port,
                    civ_addr=int(str(args.civ_addr), 16), model=args.model,
                    serial=serial, station=station)
     return cls()
@@ -72,6 +72,7 @@ def main(argv=None):
     ap.add_argument("--user", default=None, help="icom9700 adapter: radio Network username")
     ap.add_argument("--pass", dest="pw", default=None, help="icom9700 adapter: radio Network password")
     ap.add_argument("--radio-port", type=int, default=50001, help="icom9700 adapter: control port (default 50001)")
+    ap.add_argument("--radio-local-ip", default=None, help="icom9700 adapter: local IP that reaches the radio (default: autodetect; set when the radio LAN differs from --ip, e.g. gate advertised on Tailscale but radio on the LAN)")
     ap.add_argument("--civ-addr", default="A2", help="icom9700 adapter: radio CI-V address hex (default A2)")
     ap.add_argument("--serial", default="GATE0001", help="advertised Flex serial (unique per gate; avoids AE chooser collisions)")
     ap.add_argument("--station", default="aether-gate 1", help="station name AE displays (number per dongle: 'aether-gate 1', 'aether-gate 2', ...)")
