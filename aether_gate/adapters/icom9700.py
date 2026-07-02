@@ -235,10 +235,22 @@ class Icom9700Adapter(RadioAdapter):
             except Exception:
                 pass
 
+    # The rig's real coverage; AE can ask for anything (e.g. its restored
+    # 40m profile at connect) — chasing an out-of-range target just earns
+    # an FA from the radio, so drop it here and let the radio->AE dial
+    # sync snap AE back to where the rig actually is.
+    BAND_RANGES_MHZ = ((144.0, 148.0), (420.0, 450.0), (1240.0, 1300.0))
+
     # --- control (AE -> radio) -----------------------------------------
     def retune(self, center_hz):
-        if self._civ:
-            self._civ.set_freq_hz(int(center_hz))
+        if not self._civ:
+            return
+        mhz = center_hz / 1e6
+        if not any(lo <= mhz <= hi for lo, hi in self.BAND_RANGES_MHZ):
+            print(f"[tuner] ignoring out-of-range target {mhz:.4f} MHz "
+                  f"(rig covers 2m/70cm/23cm)", flush=True)
+            return
+        self._civ.set_freq_hz(int(center_hz))
 
     def set_mode(self, mode):
         mb = MODE_TO_CIV.get((mode or "").upper())
