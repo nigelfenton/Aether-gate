@@ -36,9 +36,12 @@ def build_adapter(name, args):
         # give the 9700 a distinct identity unless the user overrode the shared defaults
         serial = args.serial if args.serial != "GATE0001" else "GATE9700"
         station = args.station if args.station != "aether-gate 1" else "aether-gate 9700"
+        # FLEX-6700 is the only Flex with 2m — don't let the shared FLEX-6600
+        # default hide the 9700's home band in AE
+        model = args.model if args.model != "FLEX-6600" else "FLEX-6700"
         return cls(radio_ip=args.radio_ip, username=args.user, password=args.pw,
                    local_ip=args.radio_local_ip, radio_port=args.radio_port,
-                   civ_addr=int(str(args.civ_addr), 16), model=args.model,
+                   civ_addr=int(str(args.civ_addr), 16), model=model,
                    serial=serial, station=station)
     return cls()
 
