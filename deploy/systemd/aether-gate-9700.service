@@ -1,0 +1,58 @@
+# Aether-gate — IC-9700 (Icom LAN) as a persistent systemd service.
+# Copyright (C) 2026 Nigel Fenton (G0JKN). GPL-3.0-or-later.
+#
+# Install (edit the ExecStart IP/creds first):
+#   sudo cp aether-gate-9700.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now aether-gate-9700
+#   systemctl status aether-gate-9700
+#   journalctl -u aether-gate-9700 -f
+#
+# WHY a service (not the launcher): the setup UI spawns the gate as a CHILD;
+# when the launcher/terminal dies the gate is hard-killed and can't send its
+# 0x05 disconnect -> the radio keeps a phantom RS-BA1 session that blocks the
+# next start ("came up then jumped to the other radio"). systemd owns the
+# process, stops it with a catchable SIGTERM (the gate turns that into a
+# graceful close -> 0x05), and restarts it on a crash. This is the reliable
+# way to run it unattended.
+
+[Unit]
+Description=Aether-gate — IC-9700 LAN bridge to AetherSDR (Flex)
+Documentation=https://github.com/nigelfenton/Aether-gate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/gate
+Environment=PYTHONPATH=/home/pi/gate
+Environment=PYTHONUNBUFFERED=1
+
+# --- EDIT THESE: radio IP, credentials, and this host's LAN IP + AE's IP ---
+ExecStart=/usr/bin/python3 -m aether_gate \
+    --adapter icom9700 \
+    --radio-ip 10.0.0.7 --user nigel --pass CHANGEME \
+    --ip 10.0.0.131 --ae 10.0.0.103 \
+    --serial GATE9700 --station "aether-gate 9700" --ctl-port 8732
+
+# GRACEFUL STOP is the whole point. systemd sends SIGTERM on stop/restart;
+# __main__.py catches SIGTERM and runs adapter.close() -> the 0x05 disconnect
+# that releases the radio's session. Give it time to flush that datagram (the
+# adapter also has a 0.3s socket-flush grace) before systemd escalates to
+# SIGKILL. KillMode=mixed: SIGTERM to the main proc (our handler), SIGKILL to
+# any stragglers after the timeout.
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=10
+
+# Restart on a crash, but a clean `systemctl stop` stays stopped. RestartSec
+# gives the radio a moment; note a HARD crash can't send 0x05, so the next
+# start may still hit the phantom -> the gate cleans up + STOPs itself in that
+# case (see __main__: open-failure path), and this restart will retry after
+# the radio's stale window. Keep RestartSec generous so we don't hammer it.
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,37 @@
+# Aether-gate — Radio Setup / launcher web UI (:8730) as a boot service.
+# Copyright (C) 2026 Nigel Fenton (G0JKN). GPL-3.0-or-later.
+#
+# This is the FIRST-BOOT face of the Pi appliance: browse http://<pi>:8730/
+# (or http://aethergate.local:8730/ with avahi) to pick a radio and Start.
+# Install:
+#   sudo cp aether-gate-setup.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now aether-gate-setup
+#
+# NB: gates STARTED from this UI are launcher children — for an unattended,
+# always-on radio prefer a dedicated aether-gate-9700 / kenwood-gate service
+# (this UI is for interactive setup / occasional use).
+
+[Unit]
+Description=Aether-gate — Radio Setup / launcher web UI (:8730)
+Documentation=https://github.com/nigelfenton/Aether-gate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/gate
+Environment=PYTHONPATH=/home/pi/gate
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -u -m aether_gate.setup --no-browser
+
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=8
+
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

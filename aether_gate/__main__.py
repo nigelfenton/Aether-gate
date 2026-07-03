@@ -12,6 +12,7 @@ The core threads (discovery, UDP prime, control TCP serve) are wired exactly as
 flex-sim wires them; only the signal source is swapped for the adapter.
 """
 import argparse
+import signal
 import threading
 import time
 
@@ -118,6 +119,21 @@ def main(argv=None):
     ip = args.ip or local_ip()
     adapter = build_adapter(args.adapter, args)
 
+    # GRACEFUL SIGTERM. `systemctl stop` (and any supervisor: nssm/launchd)
+    # sends SIGTERM, whose Python default is to kill the process WITHOUT
+    # running our finally: adapter.close() — so a service stop would skip the
+    # 0x05 disconnect and strand a phantom session, the exact bug fixed for
+    # Ctrl-C. Turn SIGTERM into the SAME graceful path as Ctrl-C by raising
+    # KeyboardInterrupt into the main thread: it unwinds through the try/finally
+    # below, so close() (→0x05) always runs. Best-effort — signal is a no-op on
+    # platforms lacking SIGTERM (Windows delivers it for our own Popen kills).
+    def _graceful(signum, frame):
+        raise KeyboardInterrupt
+    try:
+        signal.signal(signal.SIGTERM, _graceful)
+    except (ValueError, AttributeError, OSError):
+        pass                              # not main thread / no SIGTERM here
+
     # adapter.open() lives INSIDE the try/finally so a connect failure still
     # runs adapter.close() — for the IC-9700 that's what sends the clean 0x05
     # disconnect and releases the radio's session. Skipping it (open() used to
@@ -153,11 +169,16 @@ def main(argv=None):
             + ("  (same-host mode)" if args.port != DISCOVERY_PORT else ""))
         if args.ctl_port:
             log(f"** control panel: http://{ip}:{args.ctl_port}/ **")
+        radio.serve()
+    except KeyboardInterrupt:
+        # Ctrl-C OR SIGTERM (see _graceful) — flip the serve loop off and let
+        # the finally run close()/0x05. Also covers a stop DURING open()/startup
+        # (radio may not exist yet), so guard the attribute.
         try:
-            radio.serve()
-        except KeyboardInterrupt:
             radio.run = False
-            log("bye")
+        except NameError:
+            pass
+        log("bye")
     finally:
         try:
             adapter.close()

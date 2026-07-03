@@ -1,0 +1,55 @@
+# Aether-gate — Kenwood (hamlib CAT + SoapySDR IF-tap spectrum) as a service.
+# Copyright (C) 2026 Nigel Fenton (G0JKN). GPL-3.0-or-later.
+#
+# Install (edit ExecStart model/serial-port/IPs first):
+#   sudo cp kenwood-gate.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now kenwood-gate
+#   journalctl -u kenwood-gate -f
+#
+# Proven end-to-end 2026-07-02: TS-450S -> FTDI /dev/ttyUSB0 -> rigctld (gate
+# auto-spawns it with the RTS/DTR/no-handshake fix) + V4 dongle spectrum -> AE
+# as a FLEX-6600 with a live 20m waterfall.
+
+[Unit]
+Description=Aether-gate — Kenwood CAT + SDR spectrum bridge to AetherSDR
+Documentation=https://github.com/nigelfenton/Aether-gate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/gate
+Environment=PYTHONPATH=/home/pi/gate
+Environment=PYTHONUNBUFFERED=1
+
+# Clear any stray rigctld from a prior run BEFORE start (it holds the serial
+# port; a leftover instance makes the gate's own rigctld spawn fail
+# "connection refused"). The '-' prefix ignores "no process" exit codes.
+ExecStartPre=-/usr/bin/pkill -9 rigctld
+
+# --- EDIT THESE: model, serial port/baud, gain, this host IP + AE IP ---
+ExecStart=/usr/bin/python3 -m aether_gate \
+    --adapter kenwood --kw-model TS-450S \
+    --rig-serial-port /dev/ttyUSB0 --rig-baud 4800 \
+    --soapy-driver rtlsdr --gain 40 \
+    --ip 10.0.0.131 --ae 10.0.0.103 \
+    --serial GATEKENW --station "aether-gate kenwood" --ctl-port 8734
+
+# Reap the auto-spawned rigctld when the gate stops (the adapter also kills it,
+# this is belt-and-braces so it never lingers on the serial port).
+ExecStopPost=-/usr/bin/pkill -9 rigctld
+
+# Graceful stop: SIGTERM -> gate's handler -> clean shutdown. (No radio-session
+# 0x05 concern here — that's Icom-specific — but a clean stop still lets the
+# adapter kill rigctld and release the dongle tidily.)
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=10
+
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
