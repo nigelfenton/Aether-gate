@@ -572,7 +572,7 @@ class Icom9700Adapter(RadioAdapter):
                       "live": (fps is not None and fps > 0.5),
                       "bins": (len(civ.latest_dbm) if civ and civ.latest_dbm else None),
                       "total_frames": (civ.frames if civ else 0)},
-            "flags": {"sub_receiver": sub_on,
+            "flags": {"sub_receiver": (self.sub_active() if civ else False),
                       "dualwatch_reg": bool(civ.dualwatch) if civ else False},
             "counters": {"tune_ok": (civ.n_fb if civ else 0),
                          "tune_refused": (civ.n_fa if civ else 0)},
