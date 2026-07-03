@@ -185,7 +185,8 @@ class KenwoodAdapter(RadioAdapter):
                 mtgt = self._set_mode_target
                 if mtgt is not None:
                     self._set_mode_target = None
-                    if self._ctl.set_mode(mtgt):
+                    ok = self._ctl.set_mode(mtgt)
+                    if ok:
                         self._mode = mtgt
                         self._sdr.set_mode(mtgt)
                     continue
