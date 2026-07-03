@@ -36,7 +36,7 @@ def build_adapter(name, args):
     if name == "icom9700":
         # give the 9700 a distinct identity unless the user overrode the shared defaults
         serial = args.serial if args.serial != "GATE0001" else "GATE9700"
-        station = args.station if args.station != "aether-gate 1" else "aether-gate 9700"
+        station = args.station if args.station != "aether-gate 1" else "Aether-gate IC-9700"
         # FLEX-6700 is the only Flex with 2m — don't let the shared FLEX-6600
         # default hide the 9700's home band in AE
         model = args.model if args.model != "FLEX-6600" else "FLEX-6700"
@@ -46,7 +46,9 @@ def build_adapter(name, args):
                    serial=serial, station=station)
     if name == "kenwood":
         serial = args.serial if args.serial != "GATE0001" else "GATEKENW"
-        station = args.station if args.station != "aether-gate 1" else "aether-gate kenwood"
+        # include the actual Kenwood model so the AE chooser reads e.g.
+        # "Aether-gate TS-450S", not a generic "Kenwood"
+        station = args.station if args.station != "aether-gate 1" else f"Aether-gate {args.kw_model}"
         return cls(model=args.kw_model,
                    rigctld_host=args.rigctld_host, rigctld_port=args.rigctld_port,
                    hamlib_model=args.hamlib_model,

@@ -46,7 +46,7 @@ class KenwoodAdapter(RadioAdapter):
                  soapy_driver="rtlsdr", soapy_args="", samp_rate=2_040_000,
                  gain_db=40.0, direct_samp=None, agc=False,
                  # AE identity
-                 advertise=None, serial="GATEKENW", station="aether-gate kenwood"):
+                 advertise=None, serial="GATEKENW", station="Aether-gate Kenwood"):
         self.model = model
         row = get_kenwood(model)
         self._row = row
