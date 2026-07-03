@@ -1291,14 +1291,18 @@ class Radio:
 
         # --- slice 0 = MAIN receiver (always present) --------------------
         mfmhz = main_rx["freq_hz"] / 1e6
+        mmode = _mode(main_rx["mode"])
         sl0 = self.slices.get(0)
-        if sl0 is not None and abs(sl0["freq"] - mfmhz) > 5e-6:
+        # sync on freq OR mode change (a mode-only change on the rig must reach
+        # AE too — was freq-only, so rig mode changes were invisible).
+        if sl0 is not None and (abs(sl0["freq"] - mfmhz) > 5e-6 or sl0["mode"] != mmode):
+            freq_moved = abs(sl0["freq"] - mfmhz) > 5e-6
             sl0["freq"] = mfmhz
-            sl0["mode"] = _mode(main_rx["mode"])
+            sl0["mode"] = mmode
             if self.active_slice == 0:
                 self.slice_freq, self.slice_mode = sl0["freq"], sl0["mode"]
             pid0 = sl0.get("pan") or self._primary_pan()
-            if pid0 in self.pans:
+            if freq_moved and pid0 in self.pans:
                 self.pans[pid0]["center"] = mfmhz
                 self.emit_pan_status(self.conn, pid0)
             self.emit_slice_status(self.conn, 0)
