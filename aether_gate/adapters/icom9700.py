@@ -250,6 +250,24 @@ class Icom9700Adapter(RadioAdapter):
         self._freq_polled_at = 0.0        # slow freq poll (dial-sync when transceive is off)
 
     def open(self):
+        # ANY failure in here MUST tear the session down cleanly, or the radio
+        # is left holding a phantom RS-BA1 session that refuses the next login
+        # ("comes up then swaps to the other radio after 2-3 s"). open() is
+        # called OUTSIDE __main__'s try/finally, and the connect-failed path
+        # below used to raise without calling close() — so the 0x05 disconnect
+        # never went out. Wrap the whole thing: on any exception, close()
+        # (which sends 0x05 + flushes) then re-raise. close() already no-ops on
+        # the None halves, so a half-built session cleans up fine.
+        try:
+            self._open()
+        except BaseException:
+            try:
+                self.close()
+            except Exception:
+                pass
+            raise
+
+    def _open(self):
         lip = self.local_ip or _local_ip()
         self.local_ip = lip
         self._handler = Ic9700Handler(lip, self.radio_ip, self.radio_port,
@@ -275,7 +293,7 @@ class Icom9700Adapter(RadioAdapter):
                 print("[civ] no reply to our reads yet - re-firing bring-up", flush=True)
                 self._civ._on_iamready()
         if self._civ.freq_hz is None:
-            self.close()
+            # teardown is handled by open()'s wrapper (which sends 0x05 + flushes)
             raise RuntimeError("IC-9700 accepted the session but ignores our "
                                "commands (poisoned seq layer / stale session) - "
                                "wait ~40s and retry")
@@ -283,12 +301,19 @@ class Icom9700Adapter(RadioAdapter):
               f"{self._civ.frames} scope frames)", flush=True)
 
     def close(self):
+        # stop() on each stream sends the 0x05 disconnect the radio needs to
+        # release its session (else it lingers as a phantom and blocks the next
+        # login). stop() sets _run=False and fires 0x05 as one best-effort UDP
+        # datagram (same single-shot the SDR9700 reference does in its dtor) —
+        # give it a beat to actually leave the socket before the daemon threads
+        # wind down, so a fast process exit can't swallow the disconnect.
         for obj in (self._civ, self._handler):
             try:
                 if obj:
                     obj.stop()
             except Exception:
                 pass
+        time.sleep(0.3)
 
     def needs_reconnect(self):
         """True when the deaf-session watchdog wants a full CI-V reconnect."""

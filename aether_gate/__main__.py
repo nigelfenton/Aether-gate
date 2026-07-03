@@ -117,26 +117,47 @@ def main(argv=None):
 
     ip = args.ip or local_ip()
     adapter = build_adapter(args.adapter, args)
-    adapter.open()
 
-    radio = Radio(ip, args.ae, args.pattern, args.bins, args.fps, args.width_khz,
-                  port=args.port, model=args.model, adapter=adapter)
-    threading.Thread(target=radio.discovery_loop, daemon=True).start()
-    threading.Thread(target=radio.prime_loop, daemon=True).start()
-    if args.ctl_port:
-        start_control_server(radio, args.ctl_port)
-
-    log(f"aether-gate - adapter={args.adapter} provides={adapter.provides} "
-        f"model={radio.model} serial={radio.serial} ip={ip}")
-    log(f"discovery -> AE's UDP :{DISCOVERY_PORT}; control/data on :{args.port}"
-        + ("  (same-host mode)" if args.port != DISCOVERY_PORT else ""))
-    if args.ctl_port:
-        log(f"** control panel: http://{ip}:{args.ctl_port}/ **")
+    # adapter.open() lives INSIDE the try/finally so a connect failure still
+    # runs adapter.close() — for the IC-9700 that's what sends the clean 0x05
+    # disconnect and releases the radio's session. Skipping it (open() used to
+    # be up here, outside the finally) left a phantom RS-BA1 session that
+    # blocked the next Start ("came up then jumped to the other radio"). On a
+    # failed connect we clean up and STOP — the radio needs an untouched
+    # settle (power-cycle, or Menu>Set>Network>Network function OFF~10s>ON)
+    # before it will accept a fresh login; hammering retries only resets its
+    # stale timer. Fix it at the radio, then Start again.
     try:
-        radio.serve()
-    except KeyboardInterrupt:
-        radio.run = False
-        log("bye")
+        try:
+            adapter.open()
+        except Exception as e:
+            # open()'s own wrapper already tore the session down (sent 0x05);
+            # the finally: adapter.close() below is the belt-and-braces. Just
+            # report and STOP.
+            log(f"adapter open failed: {e}")
+            log("cleaned up (sent disconnect). NOT retrying — let the radio "
+                "settle (power-cycle or toggle its Network function off/on), "
+                "then Start again.")
+            return 1
+
+        radio = Radio(ip, args.ae, args.pattern, args.bins, args.fps, args.width_khz,
+                      port=args.port, model=args.model, adapter=adapter)
+        threading.Thread(target=radio.discovery_loop, daemon=True).start()
+        threading.Thread(target=radio.prime_loop, daemon=True).start()
+        if args.ctl_port:
+            start_control_server(radio, args.ctl_port)
+
+        log(f"aether-gate - adapter={args.adapter} provides={adapter.provides} "
+            f"model={radio.model} serial={radio.serial} ip={ip}")
+        log(f"discovery -> AE's UDP :{DISCOVERY_PORT}; control/data on :{args.port}"
+            + ("  (same-host mode)" if args.port != DISCOVERY_PORT else ""))
+        if args.ctl_port:
+            log(f"** control panel: http://{ip}:{args.ctl_port}/ **")
+        try:
+            radio.serve()
+        except KeyboardInterrupt:
+            radio.run = False
+            log("bye")
     finally:
         try:
             adapter.close()
