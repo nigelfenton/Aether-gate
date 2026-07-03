@@ -38,6 +38,10 @@ class KenwoodAdapter(RadioAdapter):
     def __init__(self, model="TS-2000",
                  # hamlib control
                  rigctld_host="127.0.0.1", rigctld_port=4532, hamlib_model=None,
+                 # rigctld auto-spawn (if serial_port given, we launch rigctld ourselves;
+                 # otherwise we connect to an already-running rigctld at host:port)
+                 serial_port=None, serial_baud=4800, rigctld_bin="rigctld",
+                 serial_conf="serial_handshake=None,rts_state=ON,dtr_state=ON",
                  # soapy spectrum dongle (defaults suit an RTL-SDR Blog V4)
                  soapy_driver="rtlsdr", soapy_args="", samp_rate=2_040_000,
                  gain_db=40.0, direct_samp=None, agc=False,
@@ -51,6 +55,14 @@ class KenwoodAdapter(RadioAdapter):
         bands = tuple(b.name for b in row.bands) if row else ()
 
         self._hamlib_model = hamlib_model or (row.hamlib_model if row else None)
+        # rigctld auto-spawn config. serial_conf default carries the TS-450 fix
+        # (RTS+DTR asserted, no handshake) — proven necessary 2026-07-02 or hamlib
+        # times out even though the radio answers.
+        self._serial_port = serial_port
+        self._serial_baud = int(serial_baud)
+        self._rigctld_bin = rigctld_bin
+        self._serial_conf = serial_conf
+        self._rigctld_proc = None
         self._ctl = Rigctld(rigctld_host, rigctld_port)
 
         # The dongle does the spectrum; start it centred wherever the rig is (updated on open()).
@@ -75,8 +87,28 @@ class KenwoodAdapter(RadioAdapter):
         self._poll_thread = None
         self._steer_lock = threading.Lock()
 
+    # --- rigctld auto-spawn ---------------------------------------------
+    def _spawn_rigctld(self):
+        """Launch rigctld ourselves for a serial rig, with the serial config
+        baked in (so the user doesn't have to remember the RTS/DTR/handshake
+        incantation). Only when serial_port was given; else we assume an
+        already-running daemon at rigctld_host:port."""
+        import subprocess
+        cmd = [self._rigctld_bin, "-m", str(self._hamlib_model),
+               "-r", self._serial_port, "-s", str(self._serial_baud),
+               "-t", str(self._ctl.port)]
+        if self._serial_conf:
+            cmd += ["--set-conf", self._serial_conf]
+        print(f"[kenwood] spawning rigctld: {' '.join(cmd)}", flush=True)
+        self._rigctld_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                                               stderr=subprocess.STDOUT)
+        time.sleep(1.5)   # let it bind + open the serial port
+
     # --- lifecycle -------------------------------------------------------
     def open(self):
+        # 0. if a serial port was given, spawn rigctld ourselves (with the fix)
+        if self._serial_port:
+            self._spawn_rigctld()
         # 1. hamlib control up first (so we know where the rig is tuned)
         self._ctl.connect()
         f = self._ctl.get_freq_hz()
@@ -103,6 +135,13 @@ class KenwoodAdapter(RadioAdapter):
         except Exception: pass
         try: self._ctl.close()
         except Exception: pass
+        if self._rigctld_proc:                 # kill our spawned rigctld
+            try:
+                self._rigctld_proc.terminate()
+                self._rigctld_proc.wait(timeout=3)
+            except Exception:
+                try: self._rigctld_proc.kill()
+                except Exception: pass
 
     # --- CAT-steer: keep the dongle following the rig's dial -------------
     def _poll_loop(self):

@@ -49,6 +49,8 @@ def build_adapter(name, args):
         return cls(model=args.kw_model,
                    rigctld_host=args.rigctld_host, rigctld_port=args.rigctld_port,
                    hamlib_model=args.hamlib_model,
+                   serial_port=args.rig_serial_port, serial_baud=args.rig_baud,
+                   rigctld_bin=args.rigctld_bin,
                    soapy_driver=args.soapy_driver, soapy_args=args.soapy_args,
                    samp_rate=args.samp_rate, gain_db=args.gain,
                    direct_samp=args.direct_samp, agc=args.agc,
@@ -93,6 +95,9 @@ def main(argv=None):
     ap.add_argument("--rigctld-host", default="127.0.0.1", help="kenwood adapter: rigctld daemon host")
     ap.add_argument("--rigctld-port", type=int, default=4532, help="kenwood adapter: rigctld TCP port (default 4532)")
     ap.add_argument("--hamlib-model", type=int, default=None, help="kenwood adapter: override the rigctld model id (rigctl -l)")
+    ap.add_argument("--rig-serial-port", default=None, help="kenwood adapter: serial port of the rig (e.g. COM10 or /dev/ttyUSB0). If set, the gate SPAWNS rigctld itself (with the RTS/DTR/no-handshake config); else it connects to an already-running rigctld.")
+    ap.add_argument("--rig-baud", type=int, default=4800, help="kenwood adapter: rig serial baud (TS-450 = 4800)")
+    ap.add_argument("--rigctld-bin", default="rigctld", help="kenwood adapter: rigctld executable path (default: on PATH)")
     ap.add_argument("--serial", default="GATE0001", help="advertised Flex serial (unique per gate; avoids AE chooser collisions)")
     ap.add_argument("--station", default="aether-gate 1", help="station name AE displays (number per dongle: 'aether-gate 1', 'aether-gate 2', ...)")
     args = ap.parse_args(argv)
