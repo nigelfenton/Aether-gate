@@ -14,15 +14,22 @@ SoapySDR dongle CAT-steered to follow the rig**. (See RADIO_SUPPORT.md for the d
    Tap it off-air (own antenna, no TX risk — the default), or antenna-coupler / IF-tap for more
    fidelity later.
 
-## Step 1 — start rigctld
-Find the model id: `rigctl -l | grep -i kenwood`. Current ids baked into the registry:
-- TS-2000 = **2014**, TS-590SG = **2035** (TS-590S = 2029), TS-890S = **2045**.
+## Step 1 — start rigctld  (OR let the gate spawn it — see Step 3)
+Find the model id: `rigctl -l | grep -i kenwood`. Ids confirmed in the registry:
+- **TS-450S = 2003** (HF-only), TS-2000 = 2014, TS-590SG = 2037, TS-590S = 2031, TS-890S = 2041.
+
+**⭐ CRITICAL for the TS-450 (and likely other older rigs):** it needs
+`--set-conf="serial_handshake=None,rts_state=ON,dtr_state=ON"` or hamlib TIMES OUT (retval -5,
+"no response") even though the radio IS answering — RTS+DTR asserted enables the cable's
+level-shifter. (Proven 2026-07-02: without it hamlib fails; with it, full read+set works.)
 ```
-rigctld -m 2014 -r /dev/ttyUSB0 -s 9600        # TS-2000, adjust device + baud to your cable
-# it listens on TCP :4532. Test it:
-rigctl -m 2 127.0.0.1:4532 f                    # should print the rig's current freq
+rigctld -m 2003 -r COM10 -s 4800 -t 4532 \
+    --set-conf="serial_handshake=None,rts_state=ON,dtr_state=ON"
+# TS-450 = 4800 baud 8N1. Test it:
+rigctl -m 2 127.0.0.1:4532 f                    # should print the rig's current freq (e.g. 14074000)
 ```
-(`-m 2` = NET rigctl client talking to the daemon.)
+(`-m 2` = NET rigctl client talking to the daemon. On Windows, hamlib binaries live at
+`C:\Users\nigel\Documents\Claude\tools\hamlib\hamlib-w64-4.7.2\bin\`.)
 
 ## Step 2 — confirm the dongle enumerates
 On the gate host: `SoapySDRUtil --find` should list the dongle (driver=rtlsdr, your V4).
@@ -30,14 +37,23 @@ The SoapySDR python binding must import: `python3 -c "import SoapySDR"` (on the 
 on a fresh host see the soapy-install notes in the aurora13 memory).
 
 ## Step 3 — run the gate
+**Easiest — let the gate spawn rigctld itself** (bakes in the serial-config fix; just give it the
+port). TS-450 example:
 ```
 python -m aether_gate --adapter kenwood \
-    --kw-model TS-2000 \
-    --rigctld-host 127.0.0.1 --rigctld-port 4532 \
+    --kw-model TS-450S --rig-serial-port COM10 --rig-baud 4800 \
+    --rigctld-bin "C:/Users/nigel/Documents/Claude/tools/hamlib/hamlib-w64-4.7.2/bin/rigctld.exe" \
     --soapy-driver rtlsdr --gain 40 \
     --ip <this-host-ip> --ae <AE-host-ip> \
     --serial GATEKENW --station "aether-gate kenwood" --ctl-port 8733
 ```
+(On the Pi, `--rig-serial-port /dev/ttyUSB0` and drop `--rigctld-bin` — it's on PATH.)
+
+**Or point at an already-running rigctld** (Step 1): drop `--rig-serial-port` and use
+`--rigctld-host 127.0.0.1 --rigctld-port 4532`.
+
+⚠ **No HF dongle on the host = control works but no waterfall.** The TS-450 is HF; the panadapter
+needs an HF-capable SDR (V4/upconverter). Control (tune both ways, mode, S-meter) works without it.
 Notes:
 - `--samp-rate` defaults 2.040 MS/s (integer audio decimation). RTL span is ~2 MHz — fine for a band view.
 - For an HF dongle that needs direct sampling (non-V4): add `--direct-samp 2`.
