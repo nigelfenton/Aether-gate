@@ -6,8 +6,9 @@ SoapySDR dongle CAT-steered to follow the rig**. (See RADIO_SUPPORT.md for the d
 
 ## What you need
 1. **The Kenwood** with a CAT connection to a host (USB/serial cable, or the TS-2000's COM port).
-2. **hamlib `rigctld`** running on that host (it's cloned at linux-aether `/srv/build/hamlib` but
-   **not built yet** — build it, or `apt install libhamlib-utils` for a quick start).
+2. **hamlib `rigctld`** running on that host. ✅ **INSTALLED on linux-aether** (`libhamlib-utils`
+   4.5.5, `/usr/bin/rigctld`). Model ids CONFIRMED vs that version: TS-2000=2014, TS-590S=2031,
+   TS-590SG=2037, TS-890S=2041. On another host: `apt install libhamlib-utils`.
 3. **An HF-capable SDR dongle** for the spectrum (RTL-SDR Blog V4 / upconverter / RX888 / Airspy
    HF+) on the same host that runs the gate — Kenwood HF needs HF coverage a plain R820T can't do.
    Tap it off-air (own antenna, no TX risk — the default), or antenna-coupler / IF-tap for more

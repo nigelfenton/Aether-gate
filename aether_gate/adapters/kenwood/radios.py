@@ -15,9 +15,9 @@ model to advertise to AE, the band set, and the default spectrum dongle hint. Th
 `hamlib_model` is the ONLY vendor-specific bit — everything else (freq/mode) rides
 the generic rigctld client.
 
-⚠ NONE hardware-verified yet. hamlib model numbers below are the current stable
-IDs (`rigctl -l | grep -i kenwood`); confirm on the target rig + hamlib version.
-Bands are indicative widest ham allocations (region-neutral).
+⚠ NONE hardware-verified yet, but hamlib model numbers below are CONFIRMED against
+hamlib 4.5.5 (installed on linux-aether: `rigctl -l | grep -i kenwood`). Bands are
+indicative widest ham allocations (region-neutral).
 """
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -55,14 +55,14 @@ REGISTRY = {
         notes="HF/6m/2m/70cm multibander. hamlib -m 2014. No CAT scope -> IF-tap dongle. VERIFY."),
 
     "TS-590SG": KenwoodRadio(
-        model="TS-590SG", hamlib_model=2035, advertise="FLEX-6600",
+        model="TS-590SG", hamlib_model=2037, advertise="FLEX-6600",
         bands=_HF + _6M, spectrum="soapy-iftap", hf_dongle_needed=True, verified=False,
-        notes="HF/6m. hamlib -m 2035 (SG); TS-590S = 2029. No scope over CAT. VERIFY."),
+        notes="HF/6m. hamlib -m 2037 (SG); TS-590S = 2031. Confirmed vs hamlib 4.5.5. No CAT scope."),
 
     "TS-890S": KenwoodRadio(
-        model="TS-890S", hamlib_model=2045, advertise="FLEX-6600",
+        model="TS-890S", hamlib_model=2041, advertise="FLEX-6600",
         bands=_HF + _6M, spectrum="soapy-iftap", hf_dongle_needed=True, verified=False,
-        notes="HF/6m. Has a built-in scope but NOT exposed over CAT -> IF-tap dongle. hamlib -m 2045. VERIFY."),
+        notes="HF/6m. Built-in scope NOT over CAT -> IF-tap dongle. hamlib -m 2041 (confirmed vs 4.5.5)."),
 }
 
 
