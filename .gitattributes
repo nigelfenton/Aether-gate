@@ -1,0 +1,6 @@
+# Force LF on files that MUST stay Unix-native regardless of the checkout OS.
+# The repo is edited on Windows (aurora13) but these run on Linux/RPi, where
+# CRLF breaks them: systemd rejects CRLF in unit files, and shell scripts get
+# a bad interpreter line.
+*.service text eol=lf
+*.sh      text eol=lf
