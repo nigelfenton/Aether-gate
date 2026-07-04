@@ -51,6 +51,11 @@ radio chooser with a live panadapter and waterfall.
 See [RADIO_SUPPORT.md](RADIO_SUPPORT.md) for the two-axis (control + spectrum) model
 and how to add a radio.
 
+<p align="center">
+  <img src="docs/images/ae-chooser.png" alt="Aether-gate radios in AetherSDR's chooser" width="70%">
+  <br><em>Bridged radios appear in AetherSDR's chooser by name, alongside real FlexRadios.</em>
+</p>
+
 ---
 
 ## Quick start
