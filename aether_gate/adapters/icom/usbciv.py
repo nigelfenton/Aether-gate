@@ -50,6 +50,13 @@ def _bcd(hz):
     return bytes(out)
 
 
+def _diff_band(a, b):
+    """True if a and b are on different bands (>1 MHz apart). Used to verify a
+    07 B0 swap actually changed the selected receiver (MAIN and RX2 are always
+    on different bands on the 9700)."""
+    return a is not None and b is not None and abs(a - b) > 1_000_000
+
+
 class UsbCiv:
     """Serial CI-V control channel. Thread-safe (one lock serialises transactions).
     Holds a background poller that swap-reads RX2 at a gentle cadence."""
@@ -161,6 +168,18 @@ class UsbCiv:
             return MODE_BYTES.get(b[1])
         return None
 
+    def _swap_until(self, pred, settle=0.3, tries=4):
+        """Fire 07 B0, read the selected freq, repeat until pred(freq) is True
+        (max `tries`). Returns True if pred held. This makes the toggle
+        self-correcting: a missed/duplicated swap is caught and fixed here, so
+        MAIN/RX2 can never end up permanently inverted."""
+        for _ in range(tries):
+            self._civ(bytes([0x07, 0xB0]), settle)
+            f = self._read_freq(bytes([0x25, 0x00]))
+            if pred(f):
+                return True
+        return False
+
     # --- the RX2 swap-read (harmless over USB) ----------------------------
     def read_rx2(self, settle=0.3):
         """07 B0 -> read RX2 (25 00 / 26 00) -> 07 B0 back. Serialised. Sets
@@ -172,18 +191,32 @@ class UsbCiv:
                 self.main_freq_hz = main
                 self.main_mode = mainm or self.main_mode
             self.swapping = True                             # LAN: suppress freq-follow
+            rx2 = rx2m = None
             try:
-                self._civ(bytes([0x07, 0xB0]), settle)       # swap -> RX2 selected
-                rx2 = self._read_freq(bytes([0x25, 0x00]))
-                rx2m = self._read_mode(bytes([0x26, 0x00]))
-                self._civ(bytes([0x07, 0xB0]), settle)       # swap back -> MAIN
+                # VERIFIED TOGGLE. 07 B0 is a toggle (swap MAIN<->SUB); a blind
+                # swap+swap-back occasionally leaves the radio INVERTED (a missed
+                # 07 B0 under load) -> MAIN/RX2 flip permanently. So swap, then
+                # VERIFY the selected freq actually moved to a different band; if
+                # not, the swap didn't take -> retry. Same on the way back:
+                # confirm we're on MAIN again, else swap until we are. Can't drift.
+                if self._swap_until(lambda f: main is None or _diff_band(f, main),
+                                    settle):
+                    rx2 = self._read_freq(bytes([0x25, 0x00]))
+                    rx2m = self._read_mode(bytes([0x26, 0x00]))
+                # restore MAIN: swap until the selected freq is MAIN's again
+                if main is not None:
+                    self._swap_until(lambda f: f is not None and not _diff_band(f, main),
+                                     settle)
+                else:
+                    self._civ(bytes([0x07, 0xB0]), settle)
             finally:
                 self.swapping = False
                 self.swap_ended_at = time.monotonic()
-            self.rx2_freq_hz = rx2
-            self.rx2_mode = rx2m
-            self.rx2_present = bool(rx2 and rx2 > 1_000_000
-                                    and (main is None or abs(rx2 - main) > 1_000_000))
+            if rx2:
+                self.rx2_freq_hz = rx2
+                self.rx2_mode = rx2m
+                self.rx2_present = bool(rx2 > 1_000_000
+                                        and (main is None or _diff_band(rx2, main)))
             return self.rx2_present
 
     def read_main(self):
@@ -216,12 +249,21 @@ class UsbCiv:
         """Tune RX2 via the swap (07 B0 -> 25 00 <bcd> -> back). Returns True if
         no FA seen in the reply."""
         with self._lock:
+            main = self.main_freq_hz
             self.swapping = True
+            fa = True
             try:
-                self._civ(bytes([0x07, 0xB0]), settle)
-                raw = self._civ(bytes([0x25, 0x00]) + _bcd(int(hz)))
-                fa = bytes([0xFE, 0xFE, CTRL, self.addr, 0xFA]) in raw
-                self._civ(bytes([0x07, 0xB0]), settle)
+                # verified toggle to RX2 (must land on a different band than MAIN)
+                if self._swap_until(lambda f: main is None or _diff_band(f, main),
+                                    settle):
+                    raw = self._civ(bytes([0x25, 0x00]) + _bcd(int(hz)))
+                    fa = bytes([0xFE, 0xFE, CTRL, self.addr, 0xFA]) in raw
+                # verified restore to MAIN
+                if main is not None:
+                    self._swap_until(lambda f: f is not None and not _diff_band(f, main),
+                                     settle)
+                else:
+                    self._civ(bytes([0x07, 0xB0]), settle)
             finally:
                 self.swapping = False
                 self.swap_ended_at = time.monotonic()

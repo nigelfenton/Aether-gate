@@ -97,24 +97,27 @@ class _Ic9700Stream(Ic9700Civ):
         self._tune_evt = threading.Event()
         self._tuner = None
 
+    # SCOPE-ONLY MODE: in the hybrid, the USB channel is the SOLE CI-V master
+    # for freq/mode (so the two masters don't corrupt each other's reads on the
+    # radio's single CI-V state). When set, the LAN channel sends ONLY scope
+    # traffic — no freq/mode reads. Set by the adapter when a USB channel is up.
+    scope_only = False
+
     def _on_iamready(self):
-        # open the data stream, enable the scope (on + output + MAIN), then
-        # FAST sweep (radio was found on SLOW = ~4 waveform frames/s) and a
-        # known ±500 kHz span so the advertised pan axis starts truthful;
-        # finally read current freq+mode
+        # open the data stream + enable the scope (on + output + MAIN), FAST
+        # sweep + ±500 kHz span so the advertised pan axis starts truthful.
         self._send_openclose(opening=True)
         self.enable_scope()
         self.set_speed(0)
         self.set_span(500_000)
-        # Seed from the SELECTED VFO (25 00 freq + 26 00 mode), NOT 03/04:
-        # 03/04 read MAIN, but we tune the SELECTED vfo — seeding from a
-        # different receiver than we drive is the 23cm mismatch bug. Also
-        # read the OTHER vfo (25 01) for the future dual-slice model.
+        if self.scope_only:
+            return                        # USB owns freq/mode — send NO reads here
+        # (LAN-only mode) seed from the SELECTED VFO (25 00 / 26 00).
         self._send_civ(bytes([0x25, 0x00]))
         self._send_civ(bytes([0x25, 0x01]))
         self._send_civ(bytes([0x26, 0x00]))
-        self._send_civ(bytes([0x26, 0x01]))       # other-vfo mode (dual-slice)
-        self._send_civ(bytes([0x07, 0xD2]))       # dualwatch on/off (dual-slice)
+        self._send_civ(bytes([0x26, 0x01]))
+        self._send_civ(bytes([0x07, 0xD2]))
 
     def _dispatch(self, d):
         if d.find(b"\x27\x00\x00") >= 0:        # scope waveform frame
@@ -371,16 +374,24 @@ class Icom9700Adapter(RadioAdapter):
         # HYBRID RX2 over USB — if a USB CI-V port was given, bring it up. The
         # 07 B0 swap to reach RX2 is harmless here (no scope stream on USB), so
         # its background poller tracks RX2 live without touching the LAN scope.
-        if self.usb_civ_port:
+        if self.usb_civ_port and self._usb is None:        # skip if already up (reconnect)
             from .icom.usbciv import UsbCiv
             self._usb = UsbCiv(self.usb_civ_port, self.usb_civ_baud, self.civ_addr)
             if self._usb.start():
                 print(f"[usb] RX2 channel up on {self.usb_civ_port} "
-                      f"(MAIN={(self._usb.main_freq_hz or 0)/1e6:.4f})", flush=True)
+                      f"(MAIN={(self._usb.main_freq_hz or 0)/1e6:.4f}); "
+                      f"LAN -> scope-only", flush=True)
             else:
                 print(f"[usb] RX2 channel FAILED: {self._usb.last_err} "
                       f"-> MAIN-only", flush=True)
                 self._usb = None
+        # HAND OFF ALL freq/mode CI-V to USB whenever the USB channel is up
+        # (also on a LAN reconnect, where _civ is fresh): the LAN channel goes
+        # scope-only so the two CI-V masters don't corrupt each other's reads on
+        # the radio's single CI-V state (USB-alone RX2 read is flawless; LAN CI-V
+        # traffic breaks it).
+        if self._usb and self._civ:
+            self._civ.scope_only = True
         # DUAL-RX (RX2) over the LAN swap is PARKED — MAIN-only unless USB above. The 07 B0 swap-read that
         # reaches RX2 physically moves the operating receiver AND races the
         # radio's transceive broadcasts (cmd 0x00), which corrupted MAIN's freq
@@ -393,17 +404,10 @@ class Icom9700Adapter(RadioAdapter):
         # cmd 0x00 transceive broadcast under _reading_rx2, (b) a swap cadence
         # that doesn't stress the scope stream.
 
-    def close(self):
-        # stop() on each stream sends the 0x05 disconnect the radio needs to
-        # release its session (else it lingers as a phantom and blocks the next
-        # login). stop() sets _run=False and fires 0x05 as one best-effort UDP
-        # datagram (same single-shot the SDR9700 reference does in its dtor) —
-        # give it a beat to actually leave the socket before the daemon threads
-        # wind down, so a fast process exit can't swallow the disconnect.
-        if self._usb:
-            try: self._usb.stop()
-            except Exception: pass
-            self._usb = None
+    def _close_lan(self):
+        # Stop ONLY the LAN halves (scope + handler). stop() sends the 0x05
+        # disconnect the radio needs to release its RS-BA1 session. Leaves the
+        # USB CI-V channel untouched (used by reconnect()).
         for obj in (self._civ, self._handler):
             try:
                 if obj:
@@ -411,6 +415,14 @@ class Icom9700Adapter(RadioAdapter):
             except Exception:
                 pass
         time.sleep(0.3)
+
+    def close(self):
+        # Full shutdown: LAN (0x05 disconnect) + the USB CI-V channel.
+        if self._usb:
+            try: self._usb.stop()
+            except Exception: pass
+            self._usb = None
+        self._close_lan()
 
     def needs_reconnect(self):
         """True when the deaf-session watchdog wants a full CI-V reconnect."""
@@ -422,8 +434,13 @@ class Icom9700Adapter(RadioAdapter):
         Called by the engine off the stream/poll thread (open() blocks)."""
         print("[civ] reconnecting the radio session...", flush=True)
         self._want_reconnect = False
+        # LAN-ONLY teardown: the USB CI-V channel is a SEPARATE transport that
+        # doesn't go deaf with the LAN scope — leave it running. (Bug 2026-07-03:
+        # reconnect() used full close() -> stopped USB, then _open() built a NEW
+        # UsbCiv that fought the old one for COM7 -> RX2 died after any LAN
+        # reconnect.) _open() sees self._usb already up and skips re-creating it.
         try:
-            self.close()
+            self._close_lan()
         except Exception:
             pass
         self._civ = self._handler = None
@@ -505,23 +522,28 @@ class Icom9700Adapter(RadioAdapter):
         # within seconds (deaf session). The radio can't sustain that. Now:
         # ONE read per ~0.4 s tick in round-robin, S-meter ~2.5 Hz, so the
         # sustained CI-V rate is a few msg/s the radio tolerates.
-        if now - self._smeter_sent_at >= 1.0:
+        # SCOPE-ONLY (hybrid): USB owns all freq/mode + S-meter. Send NO CI-V
+        # reads from the LAN channel — they corrupt the USB channel's swap-verify
+        # (two masters on the radio's one CI-V state). Keep ONLY the scope
+        # frame-progress watchdog (local counter + scope-enable re-fire).
+        scope_only = bool(self._usb)
+        if not scope_only and now - self._smeter_sent_at >= 1.0:
             self._civ.poll_smeter()                        # 15 02 (S-meter) ~1 Hz
             self._smeter_sent_at = now
         if now - self._freq_polled_at >= 1.0:
             self._freq_polled_at = now
-            # round-robin ONE read per tick (not a 5-read burst): full cycle
-            # of freq/mode/sub every ~2 s — plenty fresh for dial/band sync.
-            READS = (bytes([0x25, 0x00]),   # selected freq (authority)
-                     bytes([0x26, 0x00]),   # selected mode
-                     bytes([0x25, 0x01]),   # SUB freq
-                     bytes([0x26, 0x01]),   # SUB mode
-                     bytes([0x07, 0xD2]))   # dualwatch reg
-            i = getattr(self, "_read_rr", 0)
-            self._civ._send_civ(READS[i % len(READS)])
-            self._read_rr = i + 1
+            if not scope_only:
+                # round-robin ONE read per tick (LAN-only mode dial-sync).
+                READS = (bytes([0x25, 0x00]),   # selected freq (authority)
+                         bytes([0x26, 0x00]),   # selected mode
+                         bytes([0x25, 0x01]),   # SUB freq
+                         bytes([0x26, 0x01]),   # SUB mode
+                         bytes([0x07, 0xD2]))   # dualwatch reg
+                i = getattr(self, "_read_rr", 0)
+                self._civ._send_civ(READS[i % len(READS)])
+                self._read_rr = i + 1
 
-            # WATCHDOG — liveness is measured by SCOPE FRAME PROGRESS, NOT by
+            # WATCHDOG (runs in BOTH modes — scope liveness is transport-agnostic) — liveness is measured by SCOPE FRAME PROGRESS, NOT by
             # whether the freq VALUE changed. (Bug 2026-07-02: the old check
             # reset its timer only when freq_hz *changed*, so a STATIONARY rig —
             # freq never changing — looked "deaf" after 8 s and we tore down a
