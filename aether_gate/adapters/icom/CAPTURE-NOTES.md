@@ -22,7 +22,7 @@ The "no login response" was because I never sent the token, so the radio never a
   01(reqreply) 00(reqtype=login) 0030(BE innerseq) 0000 <tokreq LE> 00000000(token)
   ...zeros... @0x40 username(obf) @0x50 password(obf) @0x60 "SDR9700"\0...
   username obf "nigel"    = 7425373328 00...  (MATCHES our obfuscate())
-  password obf "g0jkn/w3" = 553924744d685f29 00...  (MATCHES)
+  password obf "<redacted>" = <redacted> ...  (MATCHED the live capture)
 
 ## TOKEN packet (0x40) — verified:
   40000000 0000 0000 <sentid> <rcvdid>  00000030(BE paylsz)
