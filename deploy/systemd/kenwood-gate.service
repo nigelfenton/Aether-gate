@@ -35,7 +35,7 @@ ExecStart=/usr/bin/python3 -m aether_gate \
     --rig-serial-port /dev/ttyUSB0 --rig-baud 4800 \
     --soapy-driver rtlsdr --gain 40 \
     --ip 10.0.0.131 --ae 10.0.0.103 \
-    --serial GATEKENW --station "aether-gate kenwood" --ctl-port 8734
+    --serial GATEKENW --station "Kenwood-TS-450S" --ctl-port 8734
 
 # Reap the auto-spawned rigctld when the gate stops (the adapter also kills it,
 # this is belt-and-braces so it never lingers on the serial port).

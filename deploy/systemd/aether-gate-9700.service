@@ -34,7 +34,7 @@ ExecStart=/usr/bin/python3 -m aether_gate \
     --adapter icom9700 \
     --radio-ip 10.0.0.7 --user nigel --pass CHANGEME \
     --ip 10.0.0.131 --ae 10.0.0.103 \
-    --serial GATE9700 --station "aether-gate 9700" --ctl-port 8732
+    --serial GATE9700 --station "Icom-IC-9700" --ctl-port 8732
 
 # GRACEFUL STOP is the whole point. systemd sends SIGTERM on stop/restart;
 # __main__.py catches SIGTERM and runs adapter.close() -> the 0x05 disconnect
