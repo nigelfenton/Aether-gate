@@ -366,17 +366,17 @@ class Icom9700Adapter(RadioAdapter):
                                "wait ~40s and retry")
         print(f"[civ] stream healthy (freq={self._civ.freq_hz/1e6:.4f} MHz, "
               f"{self._civ.frames} scope frames)", flush=True)
-        # ONE-TIME RX2 swap-probe: is there a real 2nd receiver on a different
-        # band? (07 B0 -> read -> back). On-demand model: we detect RX2 here and
-        # then only re-read it when AE tunes slice B — never on the poll, so the
-        # scope isn't disrupted. (dev/ic9700_rx2probe proved the recipe + clean
-        # swap-back.)
-        try:
-            if self._civ.swap_read_rx2():
-                print(f"[civ] RX2 present @ {self._civ.rx2_freq_hz/1e6:.4f} MHz "
-                      f"{self._civ.rx2_mode} (2nd receiver)", flush=True)
-        except Exception as e:
-            print(f"[civ] RX2 probe skipped: {e}", flush=True)
+        # DUAL-RX (RX2) is PARKED — MAIN-only for now. The 07 B0 swap-read that
+        # reaches RX2 physically moves the operating receiver AND races the
+        # radio's transceive broadcasts (cmd 0x00), which corrupted MAIN's freq
+        # (slice A/B swapped) and worsened the scope-deaf sessions on a live
+        # gate (seen 2026-07-03). RX2 has NO waterfall anyway (only MAIN streams),
+        # so the swap buys little for RX. The swap_read_rx2()/write_rx2_freq()
+        # machinery is left in place (proven in isolation by dev/ic9700_rx2probe)
+        # for a future dual-RX/Doppler project, but is NOT invoked live. See
+        # sub_active() -> False. Do NOT re-enable without solving: (a) guard the
+        # cmd 0x00 transceive broadcast under _reading_rx2, (b) a swap cadence
+        # that doesn't stress the scope stream.
 
     def close(self):
         # stop() on each stream sends the 0x05 disconnect the radio needs to
@@ -564,11 +564,15 @@ class Icom9700Adapter(RadioAdapter):
 
     # --- dual-receiver (RX2) — drives the second slice -------------------
     def sub_active(self):
-        """True when a real 2nd RECEIVER (RX2) is present — established by the
-        07 B0 swap-probe (rx2_present), NOT by 25 01 (which is RX1's own VFO B
-        and made slice 1 collapse onto RX1 after a few seconds — the bug this
-        fixes). Proven on HW (dev/ic9700_rx2probe): MAIN 437.191 / RX2 1270.0."""
-        return bool(self._civ and self._civ.rx2_present and self._civ.rx2_freq_hz)
+        """PARKED — always False (MAIN-only). Reaching RX2 needs the destructive
+        07 B0 swap (moves the operating receiver + races transceive broadcasts +
+        stresses the fragile scope stream), which on a live gate swapped slices
+        A/B and worsened deaf sessions. RX2 has no waterfall regardless. The RX2
+        machinery (rx2_present/swap_read_rx2/write_rx2_freq) is retained for a
+        future dual-RX/Doppler project but not used. Re-enabling requires the two
+        fixes noted at the end of _open(). For now the gate presents ONE slice =
+        the SELECTED (MAIN) receiver, which is rock-solid."""
+        return False
 
     def sub_freq_hz(self):
         return self._civ.rx2_freq_hz if self._civ else None
