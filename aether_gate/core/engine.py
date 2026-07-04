@@ -1308,8 +1308,16 @@ class Radio:
             self.emit_slice_status(self.conn, 0)
             log(f"[radio->ae] MAIN -> slice 0 {mfmhz:.5f} {sl0['mode']}")
 
-        if sub_rx is None:                                 # SUB off -> retire slice 1 + its pan
+        if sub_rx is None:                                 # SUB read as gone this tick
+            # DEBOUNCE: don't retire slice 1 on a SINGLE missing read. During a
+            # deaf-session reconnect the RX2 cache goes momentarily empty, which
+            # used to tear the sub slice down even though RX2 was still there
+            # (the disappearing-slice-B bug Nigel saw). Require a few consecutive
+            # gone-reads so a transient blip can't drop the slice.
             if sub is not None:
+                self._sub_gone_count = getattr(self, "_sub_gone_count", 0) + 1
+                if self._sub_gone_count < 3:
+                    return                                 # tolerate the blip; keep slice 1
                 spid = sub.get("pan"); prim = self._primary_pan()
                 self.slices.pop(self.SUB_SLICE, None)
                 self.status(self.conn, f"slice {self.SUB_SLICE} in_use=0")
@@ -1321,8 +1329,10 @@ class Radio:
                         self.status(self.conn, f"display waterfall 0x{swid:08X} removed")
                 if self.active_slice == self.SUB_SLICE and self.slices:
                     self.active_slice = next(iter(self.slices))
-                log("[dual] SUB off -> removed slice 1 + its pan")
+                log("[dual] SUB off (3 consecutive) -> removed slice 1 + its pan")
+                self._sub_gone_count = 0
             return
+        self._sub_gone_count = 0                           # SUB present -> reset debounce
 
         sfmhz = sub_rx["freq_hz"] / 1e6
         smode = _mode(sub_rx["mode"])

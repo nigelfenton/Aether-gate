@@ -75,10 +75,24 @@ class _Ic9700Stream(Ic9700Civ):
         # of truth for what AE sees and what we tune.
         self.freq_hz = None            # SELECTED vfo freq (25 00) — the authority
         self.mode = None               # SELECTED vfo mode (26 00)
-        self.other_freq_hz = None      # UNSELECTED (SUB) vfo freq (25 01) — dual-slice
-        self.other_mode = None         # UNSELECTED (SUB) vfo mode (26 01) — dual-slice
+        self.other_freq_hz = None      # UNSELECTED (SUB) vfo freq (25 01) — same-rx VFO B
+        self.other_mode = None         # UNSELECTED (SUB) vfo mode (26 01) — same-rx VFO B
         self.dualwatch = None          # 07 D2: True/False = SUB receiver active (dual-slice)
         self.smeter_raw = None         # last CI-V 15 02 reading, 0..255
+        # --- true SECOND RECEIVER (RX2) — reached ONLY via 07 B0 swap-read ---
+        # 25 00/25 01 are VFO A/B of the SELECTED receiver (both belong to
+        # whichever RX is MAIN); they do NOT reach RX2. Proven on HW
+        # (dev/ic9700_rx2probe 2026-07-03): MAIN 437.191 / RX2 1270.0 — 07 B0
+        # swaps which RX is selected, so `07 B0 -> read 25 00 -> 07 B0 back`
+        # reads RX2 and restores MAIN cleanly (437.191 identical before/after).
+        # These caches are refreshed ON-DEMAND only (connect + when AE tunes
+        # slice B) — NEVER on the periodic poll, because the swap briefly yanks
+        # the live scope to RX2 and back (would worsen the scope-stall).
+        self.rx2_present = False       # a real 2nd receiver on a different band?
+        self.rx2_freq_hz = None        # RX2 selected-VFO freq (via swap-read)
+        self.rx2_mode = None           # RX2 selected-VFO mode
+        self._reading_rx2 = False      # True while swapped to RX2 (reroutes 25/26 replies)
+        self._civ_lock = threading.Lock()   # serialises swap sequences vs each other
         self._tune_target = None       # latest AE-requested freq (tuner thread chases it)
         self._tune_evt = threading.Event()
         self._tuner = None
@@ -125,16 +139,26 @@ class _Ic9700Stream(Ic9700Civ):
                     self.freq_hz = _decode_bcd(data[:5])
                 elif cmd == 0x25 and len(data) >= 6:
                     if data[0] == 0x00:
-                        self.freq_hz = _decode_bcd(data[1:6])       # SELECTED vfo
+                        # While a swap-read has RX2 selected, 25 00 IS RX2's
+                        # freq — route it to the RX2 cache, NOT MAIN's freq_hz
+                        # (else the swap would corrupt slice 0 with RX2's band).
+                        if self._reading_rx2:
+                            self.rx2_freq_hz = _decode_bcd(data[1:6])
+                        else:
+                            self.freq_hz = _decode_bcd(data[1:6])   # SELECTED vfo
                     elif data[0] == 0x01:
-                        self.other_freq_hz = _decode_bcd(data[1:6])  # OTHER vfo
+                        self.other_freq_hz = _decode_bcd(data[1:6])  # same-rx VFO B
                 elif cmd == 0x01 and len(data) >= 1:
                     # 01 = mode transceive (selected vfo)
-                    self.mode = CIV_TO_MODE.get(data[0])
+                    if not self._reading_rx2:
+                        self.mode = CIV_TO_MODE.get(data[0])
                 elif cmd == 0x26 and len(data) >= 2:
                     # 26 00 = selected-vfo mode; 26 01 = other (SUB) vfo mode
                     if data[0] == 0x00:
-                        self.mode = CIV_TO_MODE.get(data[1])
+                        if self._reading_rx2:
+                            self.rx2_mode = CIV_TO_MODE.get(data[1])
+                        else:
+                            self.mode = CIV_TO_MODE.get(data[1])
                     elif data[0] == 0x01:
                         self.other_mode = CIV_TO_MODE.get(data[1])
                 elif cmd == 0x07 and len(data) >= 2 and data[0] == 0xD2:
@@ -156,6 +180,49 @@ class _Ic9700Stream(Ic9700Civ):
         self._send_civ(bytes([0x25, 0x00]) + _encode_bcd(hz))
         time.sleep(settle)
         return self.n_fa == fa0
+
+    # --- RX2 (true second receiver) swap-read / swap-write --------------------
+    # RX2 is reached ONLY by swapping which receiver is MAIN (07 B0), reading
+    # 25 00/26 00 (now RX2), then swapping back. Proven on HW (ic9700_rx2probe).
+    # These BLOCK briefly (a couple of 07 B0 + a read) and hold _civ_lock, so
+    # they must be called on-demand off the poll thread, NOT every tick.
+    def swap_read_rx2(self, settle=0.35):
+        """Swap to RX2, read its freq+mode into rx2_* caches, swap back to MAIN.
+        Sets rx2_present True iff RX2 read a real ham freq on a DIFFERENT band
+        than MAIN (a genuine second receiver, not RX1's own VFO B)."""
+        with self._civ_lock:
+            main_before = self.freq_hz
+            self._send_civ(bytes([0x07, 0xB0]))            # MAIN <-> SUB swap
+            time.sleep(settle)
+            self._reading_rx2 = True
+            self.rx2_freq_hz = self.rx2_mode = None
+            self._send_civ(bytes([0x25, 0x00])); time.sleep(settle / 2)
+            self._send_civ(bytes([0x26, 0x00])); time.sleep(settle / 2)
+            self._reading_rx2 = False
+            self._send_civ(bytes([0x07, 0xB0]))            # swap back to MAIN
+            time.sleep(settle)
+            o = self.rx2_freq_hz
+            m = main_before
+            self.rx2_present = bool(o and o > 1_000_000
+                                    and (m is None or abs(o - m) > 1_000_000))
+            return self.rx2_present
+
+    def write_rx2_freq(self, hz, settle=0.35):
+        """Tune RX2 (the real 2nd receiver) via the swap: 07 B0 -> 25 00 <bcd>
+        -> 07 B0 back. Updates the rx2_freq_hz cache optimistically so the next
+        receivers() read doesn't snap AE back. Returns True if not FA'd."""
+        with self._civ_lock:
+            self._send_civ(bytes([0x07, 0xB0]))            # swap RX2 -> selected
+            time.sleep(settle)
+            fa0 = self.n_fa
+            self._send_civ(bytes([0x25, 0x00]) + _encode_bcd(int(hz)))
+            time.sleep(settle)
+            ok = self.n_fa == fa0
+            self._send_civ(bytes([0x07, 0xB0]))            # swap back to MAIN
+            time.sleep(settle)
+            if ok:
+                self.rx2_freq_hz = int(hz)                 # optimistic cache
+            return ok
 
     def set_freq_hz(self, hz):
         # ASYNC + COALESCING: AE streams slice tunes while dragging, and the
@@ -299,6 +366,17 @@ class Icom9700Adapter(RadioAdapter):
                                "wait ~40s and retry")
         print(f"[civ] stream healthy (freq={self._civ.freq_hz/1e6:.4f} MHz, "
               f"{self._civ.frames} scope frames)", flush=True)
+        # ONE-TIME RX2 swap-probe: is there a real 2nd receiver on a different
+        # band? (07 B0 -> read -> back). On-demand model: we detect RX2 here and
+        # then only re-read it when AE tunes slice B — never on the poll, so the
+        # scope isn't disrupted. (dev/ic9700_rx2probe proved the recipe + clean
+        # swap-back.)
+        try:
+            if self._civ.swap_read_rx2():
+                print(f"[civ] RX2 present @ {self._civ.rx2_freq_hz/1e6:.4f} MHz "
+                      f"{self._civ.rx2_mode} (2nd receiver)", flush=True)
+        except Exception as e:
+            print(f"[civ] RX2 probe skipped: {e}", flush=True)
 
     def close(self):
         # stop() on each stream sends the 0x05 disconnect the radio needs to
@@ -469,48 +547,47 @@ class Icom9700Adapter(RadioAdapter):
         return self._civ.mode if self._civ else None
 
     def receivers(self):
-        """Both active receivers as an UNORDERED list of {freq_hz, mode}: one
-        entry if only MAIN, two if SUB is also on. UNORDERED because CI-V
-        25 00/25 01 are SELECTED/UNSELECTED (not MAIN/SUB) and which is
-        "selected" flip-flops when both run — so the engine must match these to
-        slices by FREQUENCY CONTINUITY (nearest existing slice), which is
-        stable since the two receivers are always on different bands."""
+        """The active receivers as {freq_hz, mode}: MAIN first (slice 0), RX2
+        second (slice 1) when a real 2nd receiver is present. ORDERED now — RX2
+        is identified reliably via the 07 B0 swap-read (rx2_* cache), so the old
+        continuity-matching guesswork against the ambiguous 25 01 is gone.
+
+        RX2 comes from the CACHE (refreshed at connect + when AE tunes slice B),
+        NOT a live read — so this is cheap to call every poll and never disturbs
+        the scope. The engine still stacks slice 1 on its own pan."""
         if not self._civ:
             return []
         out = [{"freq_hz": self._civ.freq_hz, "mode": self._civ.mode}]
         if self.sub_active():
-            out.append({"freq_hz": self._civ.other_freq_hz, "mode": self._civ.other_mode})
+            out.append({"freq_hz": self._civ.rx2_freq_hz, "mode": self._civ.rx2_mode})
         return [r for r in out if r["freq_hz"]]
 
-    # --- dual-receiver (SUB) — drives the second slice -------------------
+    # --- dual-receiver (RX2) — drives the second slice -------------------
     def sub_active(self):
-        """True when the rig's SUB receiver is operating -> AE gets a 2nd slice.
-
-        Detected by the OTHER VFO (25 01) reading a DISTINCT, real ham freq —
-        NOT by the 07 D2 'dualwatch' flag. Proven on HW 2026-07-02: with 2m +
-        23cm both running, 07 D2 read False (Icom 'dualwatch' is the narrower
-        same-band watch, not general MAIN/SUB dual-receive), while 25 01
-        correctly read 1294.5 FM. The physical presence of a second receiver
-        on a real frequency is the reliable signal."""
-        if not self._civ:
-            return False
-        o = self._civ.other_freq_hz
-        s = self._civ.freq_hz
-        # a plausible ham freq on the other vfo, meaningfully different from
-        # the selected one (>1 kHz) = a live second receiver
-        return bool(o and o > 1_000_000 and (s is None or abs(o - s) > 1_000))
+        """True when a real 2nd RECEIVER (RX2) is present — established by the
+        07 B0 swap-probe (rx2_present), NOT by 25 01 (which is RX1's own VFO B
+        and made slice 1 collapse onto RX1 after a few seconds — the bug this
+        fixes). Proven on HW (dev/ic9700_rx2probe): MAIN 437.191 / RX2 1270.0."""
+        return bool(self._civ and self._civ.rx2_present and self._civ.rx2_freq_hz)
 
     def sub_freq_hz(self):
-        return self._civ.other_freq_hz if self._civ else None
+        return self._civ.rx2_freq_hz if self._civ else None
 
     def sub_mode(self):
-        return self._civ.other_mode if self._civ else None
+        return self._civ.rx2_mode if self._civ else None
 
     def set_sub_freq_hz(self, hz):
-        """Tune the SUB receiver (25 01) WITHOUT disturbing MAIN — proven on HW
-        (dev/ic9700_rxaddr Method A). Used by the engine when AE tunes slice B."""
-        if self._civ:
-            self._civ._send_civ(bytes([0x25, 0x01]) + _encode_bcd(int(hz)))
+        """Tune the REAL 2nd receiver (RX2) via the 07 B0 swap — NOT 25 01 (that
+        tuned RX1's VFO B, so AE's slice-B tune reverted). The swap-write blocks
+        briefly, so run it off-thread to keep the engine command path free; it
+        updates the rx2_freq_hz cache optimistically so receivers() won't snap
+        AE back before the write lands."""
+        civ = self._civ
+        if not civ:
+            return
+        civ.rx2_freq_hz = int(hz)                          # optimistic (pre-write)
+        threading.Thread(target=civ.write_rx2_freq, args=(int(hz),),
+                         daemon=True, name="ic9700-rx2-tune").start()
 
     # --- diagnostics: 'what the gate sees from the radio' (web panel) -----
     @staticmethod
@@ -550,11 +627,13 @@ class Icom9700Adapter(RadioAdapter):
         # this was mislabelled MAIN/SUB — corrected 2026-07-02.)
         vfos = []
         if civ:
-            vfos.append({"name": "sel rx · VFO A", "freq_hz": civ.freq_hz,
+            # RX1 (MAIN) selected VFO — what slice 0 shows
+            vfos.append({"name": "RX1 (MAIN)", "freq_hz": civ.freq_hz,
                          "mode": civ.mode, "selected": True})
-            if civ.other_freq_hz:
-                vfos.append({"name": "sel rx · VFO B", "freq_hz": civ.other_freq_hz,
-                             "mode": civ.other_mode, "selected": False})
+            # RX2 — the true 2nd receiver, from the 07 B0 swap-read cache (slice 1)
+            if civ.rx2_present and civ.rx2_freq_hz:
+                vfos.append({"name": "RX2 (SUB)", "freq_hz": civ.rx2_freq_hz,
+                             "mode": civ.rx2_mode, "selected": False})
         return {
             "radio": "IC-9700",
             "presented_as": self.capabilities.model,
