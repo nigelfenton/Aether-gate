@@ -192,4 +192,5 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    import sys as _sys
+    _sys.exit(main())   # propagate rc=1 on open-failure so systemd Restart=on-failure fires
