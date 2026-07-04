@@ -92,6 +92,14 @@ next time.
   <br><em>The Setup page (:8730) — choose a radio, fill its fields, Start.</em>
 </p>
 
+The **Radio type** dropdown picks the adapter family — Icom (LAN), Kenwood (CAT),
+an SDR dongle, or the built-in sim:
+
+<p align="center">
+  <img src="docs/images/adapters.png" alt="The Radio type / adapter dropdown" width="70%">
+  <br><em>Pick the adapter family from the Radio type dropdown.</em>
+</p>
+
 The Setup page links to a **Known Info / status** page (`/known`) — a turn-it-on
 health check: is your advertise IP reachable, are the dependencies present, which
 dongles/serial ports are found, and can each saved profile's radio actually be
@@ -117,7 +125,7 @@ at `/diagnostics` if you want to script against it.
 
 ### Command line (the power path)
 
-The Setup page just builds a command line for you; you can also run it directly:
+Anything the Setup page can launch, you can also run directly from the command line:
 
 ```bash
 # Icom IC-9700 over its LAN interface
