@@ -190,23 +190,28 @@ class KenwoodAdapter(RadioAdapter):
                         self._mode = mtgt
                         self._sdr.set_mode(mtgt)
                     continue
-                # 3. otherwise READ the rig to follow the dial. Round-robin so
-                #    each read is one cheap serial transaction. Hold freq-read
+                # 3. otherwise READ the rig to follow the dial. Still ONE serial
+                #    transaction per tick (the 4800-baud contention rule), but
+                #    WEIGHTED: freq gets 2 of every 3 ticks so the dial-sync lag
+                #    is ~0.3-0.4s instead of ~0.6-0.9s ("a bit laggy" feedback);
+                #    mode + S-meter alternate on the third tick (each ~1.2s —
+                #    plenty for a rare mode change / a meter). Hold freq-read
                 #    off for 1.5s after an AE set so we don't fight the user.
                 read_i += 1
-                if read_i % 3 == 0:
+                slot = read_i % 3
+                if slot != 2:                                  # 2 of 3 ticks: freq
                     if time.monotonic() - getattr(self, "_ae_drive_t", 0) > 1.5:
                         f = self._ctl.get_freq_hz()
                         if f and abs((self._freq_hz or 0) - f) > 1:
                             self._freq_hz = f
                             self._sdr.set_slice(float(f))
-                elif read_i % 3 == 1:
+                elif (read_i // 3) % 2 == 0:                   # 3rd tick, alternating: mode
                     if time.monotonic() - getattr(self, "_ae_drive_t", 0) > 1.5:
                         m = self._ctl.get_mode()
                         if m and m != self._mode:
                             self._mode = m
                             self._sdr.set_mode(m)
-                else:
+                else:                                          # ...or S-meter
                     s = self._ctl.get_smeter_db()
                     if s is not None:
                         self._smeter_db = s
