@@ -30,6 +30,11 @@ Environment=PYTHONUNBUFFERED=1
 ExecStartPre=-/usr/bin/pkill -9 rigctld
 
 # --- EDIT THESE: model, serial port/baud, gain, this host IP + AE IP ---
+# TIP: use a STABLE /dev/serial/by-id/... path for --rig-serial-port instead of
+# /dev/ttyUSB0 — with several USB-serial devices on one Pi (CAT cables, a
+# radio's own USB), enumeration order shuffles across reboots/replugs and a
+# hardcoded ttyUSB0 WILL eventually misbind (bit us live 2026-07-04).
+# `ls -l /dev/serial/by-id/` shows your cable's persistent name.
 ExecStart=/usr/bin/python3 -m aether_gate \
     --adapter kenwood --kw-model TS-450S \
     --rig-serial-port /dev/ttyUSB0 --rig-baud 4800 \
