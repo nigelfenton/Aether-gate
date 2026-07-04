@@ -61,7 +61,12 @@ class UsbCiv:
     """Serial CI-V control channel. Thread-safe (one lock serialises transactions).
     Holds a background poller that swap-reads RX2 at a gentle cadence."""
 
-    def __init__(self, port, baud=115200, civ_addr=RADIO, poll_s=3.0):
+    def __init__(self, port, baud=115200, civ_addr=RADIO, poll_s=8.0):
+        # poll_s: RX2 swap-read cadence. Each swap blinks the LAN scope to
+        # RX2's band for ~0.6s (the 07 B0 is global), so a fast cadence
+        # visibly flickers the waterfall AND stresses the scope stream
+        # (3s cadence correlated with deaf events under active tuning).
+        # 8s keeps RX2 live enough while cutting the churn ~3x.
         self.port = port
         self.baud = baud
         self.addr = civ_addr

@@ -1154,7 +1154,19 @@ class Radio:
                 pid = sl.get("pan")
                 if pid in self.pans: self.pans[pid]["center"] = sl["freq"]
             self.reply(conn, seq)
-            self._sync_active_slice()
+            # SUB-slice tune goes DIRECTLY to the 2nd receiver, regardless of
+            # which slice is active (a slice-1 tune while slice 0 is active
+            # otherwise never reaches the radio). _sync_active_slice covers the
+            # active-slice path; this covers the tuned-but-not-active path.
+            if idx == self.SUB_SLICE and self.adapter is not None \
+                    and hasattr(self.adapter, "set_sub_freq_hz"):
+                try:
+                    self._ae_drive_at = time.time()
+                    self.adapter.set_sub_freq_hz(sl["freq"] * 1e6)
+                except Exception as e:
+                    log("[adapter] sub tune error:", e)
+            else:
+                self._sync_active_slice()
             self.emit_slice_status(conn, idx)
         else:
             self.reply(conn, seq)
@@ -1224,11 +1236,19 @@ class Radio:
             if self.adapter is not None:                   # Aether-gate: tell the adapter the slice freq
                 try:
                     self._ae_drive_at = time.time()          # AE is driving: hold radio->AE sync off briefly
-                    if hasattr(self.adapter, "set_slice"):
+                    # ROUTE BY SLICE: the SUB slice (RX2) must go to the 2nd
+                    # receiver, NOT retune() (=MAIN). Bug: tuning slice B used
+                    # to retune MAIN to slice B's freq -> MAIN jumped to RX2's
+                    # band and the display looked like the slices had swapped.
+                    if self.active_slice == self.SUB_SLICE \
+                            and hasattr(self.adapter, "set_sub_freq_hz"):
+                        self.adapter.set_sub_freq_hz(self.slice_freq * 1e6)
+                    elif hasattr(self.adapter, "set_slice"):
                         self.adapter.set_slice(self.slice_freq * 1e6)   # demod target (software tune)
                     else:
                         self.adapter.retune(self.slice_freq * 1e6)      # fallback: legacy behaviour
-                    if hasattr(self.adapter, "set_mode"):
+                    if self.active_slice != self.SUB_SLICE \
+                            and hasattr(self.adapter, "set_mode"):
                         self.adapter.set_mode(self.slice_mode)
                 except Exception as e:                      # an adapter fault must not kill the control thread
                     log("[adapter] retune/set_mode error:", e)

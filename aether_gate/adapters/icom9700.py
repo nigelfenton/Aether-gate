@@ -448,12 +448,22 @@ class Icom9700Adapter(RadioAdapter):
             time.sleep(30.0)                               # let the radio's stale session fully age out
                                                            # (tonight: needs ≥30s untouched to accept a fresh session)
             try:
-                self.open()                                # re-auth + civ + health gate
+                # _open() DIRECTLY, not open(): open()'s failure wrapper does a
+                # FULL close() which killed the USB channel on every failed
+                # attempt (then the next success rebuilt it -> RX2 cache blanked
+                # -> slice 1 torn down/recreated = "slices swapping" churn).
+                # Here a failed attempt only tears down the LAN halves.
+                self._open()                               # re-auth + civ + health gate
                 self._wd_freq_t = time.monotonic()         # reset the watchdog clock
                 print("[civ] reconnect OK", flush=True)
                 return True
             except Exception as e:
                 print(f"[civ] reconnect attempt {attempt+1} failed: {e}", flush=True)
+                try:
+                    self._close_lan()                      # LAN-only cleanup (0x05); USB untouched
+                except Exception:
+                    pass
+                self._civ = self._handler = None
         print("[civ] reconnect gave up after 4 tries", flush=True)
         return False
 
