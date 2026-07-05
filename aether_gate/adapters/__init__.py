@@ -12,12 +12,14 @@ from .sim import SimAdapter
 from .soapy import SoapyAdapter   # SoapySDR import is deferred to .open(), safe to import here
 from .icom9700 import Icom9700Adapter   # icom/ LAN transport imports are stdlib-only, safe here
 from .kenwood import KenwoodAdapter     # hamlib(rigctld TCP) + soapy; imports stdlib-only here
+from .yaesu import YaesuAdapter         # thin subclass of KenwoodAdapter; Yaesu registry + defaults
 
 _REGISTRY = {
     "sim": SimAdapter,
     "soapy": SoapyAdapter,
     "icom9700": Icom9700Adapter,
     "kenwood": KenwoodAdapter,
+    "yaesu": YaesuAdapter,
 }
 
 
@@ -39,4 +41,5 @@ def available():
 
 
 __all__ = ["RadioAdapter", "AdapterCaps", "Meters", "SimAdapter", "SoapyAdapter",
-           "Icom9700Adapter", "KenwoodAdapter", "register", "get_adapter", "available"]
+           "Icom9700Adapter", "KenwoodAdapter", "YaesuAdapter", "register",
+           "get_adapter", "available"]

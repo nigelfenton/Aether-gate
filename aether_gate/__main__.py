@@ -60,6 +60,22 @@ def build_adapter(name, args):
                    direct_samp=args.direct_samp, agc=args.agc,
                    advertise=(args.model if args.model != "FLEX-6600" else None),
                    serial=serial, station=station)
+    if name == "yaesu":
+        serial = args.serial if args.serial != "GATE0001" else "GATEYAES"
+        # e.g. "Aether-gate Yaesu-FT-847" in the AE chooser
+        station = args.station if args.station != "aether-gate 1" else f"Yaesu-{args.yaesu_model}"
+        # Yaesu adapter resolves advertise/hamlib_model/bands from its own registry
+        # row; --model only overrides advertise if the user changed it off the default.
+        return cls(model=args.yaesu_model,
+                   rigctld_host=args.rigctld_host, rigctld_port=args.rigctld_port,
+                   hamlib_model=args.hamlib_model,
+                   serial_port=args.rig_serial_port, serial_baud=args.rig_baud,
+                   rigctld_bin=args.rigctld_bin,
+                   soapy_driver=args.soapy_driver, soapy_args=args.soapy_args,
+                   samp_rate=args.samp_rate, gain_db=args.gain,
+                   direct_samp=args.direct_samp, agc=args.agc,
+                   advertise=(args.model if args.model != "FLEX-6600" else None),
+                   serial=serial, station=station)
     return cls()
 
 
@@ -114,6 +130,8 @@ def main(argv=None):
     ap.add_argument("--rig-serial-port", default=None, help="kenwood adapter: serial port of the rig (e.g. COM10 or /dev/ttyUSB0). If set, the gate SPAWNS rigctld itself (with the RTS/DTR/no-handshake config); else it connects to an already-running rigctld.")
     ap.add_argument("--rig-baud", type=int, default=4800, help="kenwood adapter: rig serial baud (TS-450 = 4800)")
     ap.add_argument("--rigctld-bin", default="rigctld", help="kenwood adapter: rigctld executable path (default: on PATH)")
+    # yaesu adapter options (same hamlib+soapy plumbing as kenwood; shares --rigctld-*/--rig-*/--soapy-*)
+    ap.add_argument("--yaesu-model", default="FT-847", help="yaesu adapter: Yaesu model (FT-847/FT-991A/FTDX10/FT-710/FT-817)")
     ap.add_argument("--serial", default="GATE0001", help="advertised Flex serial (unique per gate; avoids AE chooser collisions)")
     ap.add_argument("--station", default="aether-gate 1", help="station name AE displays (number per dongle: 'aether-gate 1', 'aether-gate 2', ...)")
     args = ap.parse_args(argv)

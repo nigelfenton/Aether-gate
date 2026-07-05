@@ -83,12 +83,17 @@ Advertise FLEX-6700 (has built-in 2 m) for rigs with 2 m; FLEX-6600 for HF+6 m. 
 | TS-2000 | hamlib | soapy-iftap | FLEX-6700 | HF/6m/2m/70cm(+23cm opt) | multibander |
 
 ### Yaesu (via Hamlib — IF-tap dongle for panadapter)
-| Model | control | spectrum | advertise | bands | status |
-|---|---|---|---|---|---|
-| FT-991A | hamlib | soapy-iftap | FLEX-6700 | HF/6m/2m/70cm | GUESS/VERIFY |
-| FTDX10 | hamlib | soapy-iftap | FLEX-6600 | HF/6m | scope not over CAT |
-| FT-710 | hamlib | soapy-iftap | FLEX-6600 | HF/6m | GUESS/VERIFY |
-| FT-817/818 | hamlib | audio-fft | FLEX-6700 | HF/6m/2m/70cm | QRP, no scope |
+Implemented as the `yaesu` adapter (`adapters/yaesu/`), a thin subclass of the Kenwood
+hamlib+soapy adapter with a Yaesu registry. `--adapter yaesu --yaesu-model FT-847` (or pick
+it in the setup web UI). hamlib model ids confirmed on the Pi5 gate's hamlib 2026-07-05.
+
+| Model | control | spectrum | advertise | hamlib -m | bands | status |
+|---|---|---|---|---|---|---|
+| FT-847 | hamlib | soapy-iftap | FLEX-6700 | 1001 | HF/6m/2m/70cm | id CONFIRMED; end-to-end VERIFY |
+| FT-991A | hamlib | soapy-iftap | FLEX-6700 | 1035 | HF/6m/2m/70cm | GUESS/VERIFY |
+| FTDX10 | hamlib | soapy-iftap | FLEX-6600 | 1042 | HF/6m | scope not over CAT; VERIFY id |
+| FT-710 | hamlib | soapy-iftap | FLEX-6600 | 1046 | HF/6m | GUESS/VERIFY |
+| FT-817/818 | hamlib | audio-fft | FLEX-6700 | 1020 | HF/6m/2m/70cm | QRP, no scope |
 
 ### SDR / other (NOT CAT — IQ source family, `soapy`/HPSDR adapter)
 | Device | control | spectrum | advertise | bands | status |

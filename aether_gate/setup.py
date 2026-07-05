@@ -22,6 +22,7 @@ import time
 from .adapters import available
 from .adapters.icom import radios as icom_radios
 from .adapters.kenwood import radios as kenwood_radios
+from .adapters.yaesu import radios as yaesu_radios
 
 SETUP_PORT = 8730
 PROFILES_PATH = os.path.join(os.path.expanduser("~"), ".aether-gate", "profiles.json")
@@ -54,6 +55,16 @@ def _kenwood_json():
     out = {}
     for m in kenwood_radios.supported():
         r = kenwood_radios.get(m)
+        out[m] = {"hamlib_model": r.hamlib_model, "advertise": r.advertise,
+                  "spectrum": r.spectrum, "hf_dongle_needed": r.hf_dongle_needed,
+                  "verified": r.verified, "bands": [b.name for b in r.bands]}
+    return out
+
+
+def _yaesu_json():
+    out = {}
+    for m in yaesu_radios.supported():
+        r = yaesu_radios.get(m)
         out[m] = {"hamlib_model": r.hamlib_model, "advertise": r.advertise,
                   "spectrum": r.spectrum, "hf_dongle_needed": r.hf_dongle_needed,
                   "verified": r.verified, "bands": [b.name for b in r.bands]}
@@ -94,6 +105,11 @@ def _build_argv(cfg):
         add("--rig-baud", "rig_baud"); add("--rigctld-host", "rigctld_host")
         add("--rigctld-port", "rigctld_port")
         add("--soapy-driver", "soapy_driver"); add("--gain", "gain"); add("--direct-samp", "direct_samp")
+    elif ad == "yaesu":
+        add("--yaesu-model", "yaesu_model"); add("--rig-serial-port", "rig_serial_port")
+        add("--rig-baud", "rig_baud"); add("--rigctld-host", "rigctld_host")
+        add("--rigctld-port", "rigctld_port")
+        add("--soapy-driver", "soapy_driver"); add("--gain", "gain"); add("--direct-samp", "direct_samp")
     elif ad == "soapy":
         add("--soapy-driver", "soapy_driver"); add("--soapy-args", "soapy_args")
         add("--gain", "gain"); add("--direct-samp", "direct_samp"); add("--samp-rate", "samp_rate")
@@ -108,10 +124,11 @@ def _missing_fields(cfg):
     req = {
         "icom9700": [("radio_ip", "Radio IP"), ("user", "Username"), ("password", "Password")],
         "kenwood": [("kw_model", "Radio model")],
+        "yaesu": [("yaesu_model", "Radio model")],
     }.get(ad, [])
     miss = [lbl for k, lbl in req if not str(cfg.get(k, "")).strip()]
-    if ad == "kenwood" and not (str(cfg.get("rig_serial_port", "")).strip()
-                                or str(cfg.get("rigctld_host", "")).strip()):
+    if ad in ("kenwood", "yaesu") and not (str(cfg.get("rig_serial_port", "")).strip()
+                                           or str(cfg.get("rigctld_host", "")).strip()):
         miss.append("Serial port (or a running rigctld host)")
     return miss
 
@@ -229,7 +246,7 @@ def _known_checks():
             add("Radios (saved profiles)", name, cfg["radio_ip"], "ok" if ok else "bad",
                 "responds on Icom LAN :50001" if ok
                 else "no reply - powered on? Network function enabled? correct IP?")
-        elif ad == "kenwood" and cfg.get("rig_serial_port"):
+        elif ad in ("kenwood", "yaesu") and cfg.get("rig_serial_port"):
             port = cfg["rig_serial_port"]
             present = port in sp or os.path.exists(port)
             add("Radios (saved profiles)", name, port, "ok" if present else "bad",
@@ -261,7 +278,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif p.startswith("/api/adapters"):
             self._json(200, available())
         elif p.startswith("/api/radios"):
-            self._json(200, {"icom": _icom_json(), "kenwood": _kenwood_json()})
+            self._json(200, {"icom": _icom_json(), "kenwood": _kenwood_json(),
+                             "yaesu": _yaesu_json()})
         elif p.startswith("/api/profiles"):
             self._json(200, _load_profiles())
         elif p.startswith("/api/status"):
@@ -410,6 +428,33 @@ PAGE = r"""<!DOCTYPE html><html><head><meta charset=utf-8>
   </div>
 </div>
 
+<!-- YAESU (CAT via hamlib + IF-tap dongle) -->
+<div id=box_yaesu class=fambox style=display:none>
+  <div class=card>
+    <label>Yaesu model</label>
+    <select id=yaesu_model onchange="onRadio('yaesu')"></select>
+    <div class=hint id=yaesu_hint style="margin-top:4px"></div>
+    <div class=row>
+      <div><label>Serial port (COM / /dev/ttyUSB)</label><input id=rig_serial_port2 placeholder="COM10 or /dev/ttyUSB0"></div>
+      <div><label>Baud</label><input id=rig_baud2 value=4800></div>
+    </div>
+    <div class=hint style="margin-top:4px;color:#6e7681">Yaesu CAT: older rigs (FT-847/817/857/897) are typically 4800 8N2; newer USB rigs (FT-991A) 38400. hamlib uses the model’s own serial defaults. Leave the serial port blank only if you point at an already-running rigctld below.</div>
+    <label style="margin-top:10px">Spectrum dongle (Yaesu has no scope over CAT &mdash; an SDR gives the waterfall)</label>
+    <div class=row>
+      <div><label style="margin-top:0">SoapySDR driver</label><input id=soapy_driver2 value=rtlsdr></div>
+      <div><label style="margin-top:0">Gain (dB)</label><input id=gain2 value=40></div>
+    </div>
+    <details class=adv><summary>Advanced (remote rigctld / HF dongle)</summary>
+      <div class=row>
+        <div><label>rigctld host (if already running elsewhere)</label><input id=rigctld_host2 placeholder=127.0.0.1></div>
+        <div><label>rigctld port</label><input id=rigctld_port2 placeholder=4532></div>
+      </div>
+      <label>RTL direct-sampling (Q=2 for HF on non-V4 dongles)</label>
+      <input id=direct_samp2 placeholder="(blank for V4 / VHF)">
+    </details>
+  </div>
+</div>
+
 <!-- DONGLE (SoapySDR) -->
 <div id=box_soapy class=fambox style=display:none>
   <div class=card>
@@ -465,31 +510,34 @@ PAGE = r"""<!DOCTYPE html><html><head><meta charset=utf-8>
 <div class=hint style="color:#6e7681;font-size:12px">Signal panel (once started): <a id=panellink target=_blank>open</a></div>
 
 <script>
-let RADIOS={icom:{},kenwood:{}};
+let RADIOS={icom:{},kenwood:{},yaesu:{}};
 const FIELDS=['adapter','pattern','radio_ip','civ_addr','user','password','radio_local_ip',
  'kw_model','rig_serial_port','rig_baud','rigctld_host','rigctld_port','soapy_driver','gain','direct_samp',
+ 'yaesu_model','rig_serial_port2','rig_baud2','rigctld_host2','rigctld_port2','soapy_driver2','gain2','direct_samp2',
  's_driver','s_gain','samp_rate','soapy_args','icom_model','model','station','serial','ip','ae','port','ctl_port','fps','bins'];
 const HINTS={
  icom:'① Icom LAN rig (IC-9700 etc.): enter the radio’s IP + the Network username/password you set in its menu. CI-V address auto-fills. ② Start.',
  kenwood:'① Kenwood CAT rig: pick the model, set the serial COM port + baud (TS-450 = 4800). A SoapySDR dongle gives the waterfall. ② Start.',
+ yaesu:'① Yaesu CAT rig: pick the model, set the serial COM port + baud (FT-847 = 4800; FT-991A = 38400). A SoapySDR dongle gives the waterfall. ② Start.',
  soapy:'① An SDR dongle (RTL-SDR/Airspy/SDRplay): pick the driver + gain. ② Start.',
  sim:'Test source — no radio needed. Pick a pattern and Start to check AE sees the gate.'};
 
 async function init(){
  const ads=await (await fetch('/api/adapters')).json();
- const nice={icom9700:'Icom (LAN)',kenwood:'Kenwood (CAT)',soapy:'SDR dongle',sim:'Test / sim'};
+ const nice={icom9700:'Icom (LAN)',kenwood:'Kenwood (CAT)',yaesu:'Yaesu (CAT)',soapy:'SDR dongle',sim:'Test / sim'};
  const as=document.getElementById('adapter'); as.innerHTML='';
- ['icom9700','kenwood','soapy','sim'].filter(a=>ads.includes(a)).forEach(a=>{
+ ['icom9700','kenwood','yaesu','soapy','sim'].filter(a=>ads.includes(a)).forEach(a=>{
    const o=document.createElement('option');o.value=a;o.textContent=nice[a]||a;as.appendChild(o);});
  RADIOS=await (await fetch('/api/radios')).json();
  fill('icom_model',Object.keys(RADIOS.icom)); fill('kw_model',Object.keys(RADIOS.kenwood));
- await loadProfiles(); onAdapter(); onRadio('icom'); onRadio('kenwood'); poll(); setInterval(poll,2000);
+ fill('yaesu_model',Object.keys(RADIOS.yaesu));
+ await loadProfiles(); onAdapter(); onRadio('icom'); onRadio('kenwood'); onRadio('yaesu'); poll(); setInterval(poll,2000);
 }
 function fill(id,keys){const s=document.getElementById(id);s.innerHTML='';keys.forEach(k=>{const o=document.createElement('option');o.value=o.textContent=k;s.appendChild(o);});}
-function fam(){const a=document.getElementById('adapter').value;return a==='icom9700'?'icom':a==='kenwood'?'kenwood':a==='soapy'?'soapy':'sim';}
+function fam(){const a=document.getElementById('adapter').value;return a==='icom9700'?'icom':a==='kenwood'?'kenwood':a==='yaesu'?'yaesu':a==='soapy'?'soapy':'sim';}
 function onAdapter(){
  const f=fam();
- ['icom','kenwood','soapy','sim'].forEach(x=>document.getElementById('box_'+x).style.display=(x===f)?'block':'none');
+ ['icom','kenwood','yaesu','soapy','sim'].forEach(x=>document.getElementById('box_'+x).style.display=(x===f)?'block':'none');
  document.getElementById('hinttext').innerHTML=HINTS[f];
  if(f==='sim'){document.getElementById('model').placeholder='FLEX-6600';}
 }
@@ -505,6 +553,12 @@ function onRadio(fam){
    document.getElementById('serial').value='GATE'+m.replace('TS-','TS');
    document.getElementById('kw_hint').innerHTML='hamlib -m '+r.hamlib_model+' &middot; bands '+r.bands.join(', ')
      +' &middot; spectrum: '+r.spectrum+(r.hf_dongle_needed?' (needs HF-capable dongle e.g. RTL-SDR V4)':'')+badge(r.verified);}
+ if(fam==='yaesu'){const m=document.getElementById('yaesu_model').value,r=RADIOS.yaesu[m];if(!r)return;
+   document.getElementById('model').value=r.advertise;
+   document.getElementById('station').value='aether-gate '+m.toLowerCase();
+   document.getElementById('serial').value='GATE'+m.replace('-','');
+   document.getElementById('yaesu_hint').innerHTML='hamlib -m '+r.hamlib_model+' &middot; bands '+r.bands.join(', ')
+     +' &middot; spectrum: '+r.spectrum+(r.hf_dongle_needed?' (needs HF-capable dongle e.g. RTL-SDR V4)':'')+badge(r.verified);}
 }
 function badge(v){return v?' <span class=ok>&#10004; verified</span>':' <span class=verify>&#9888; VERIFY</span>';}
 function cfg(){
@@ -512,10 +566,21 @@ function cfg(){
  c.adapter=document.getElementById('adapter').value;
  // dongle box uses s_driver/s_gain -> map to soapy_* for the argv
  if(fam()==='soapy'){c.soapy_driver=c.s_driver;c.gain=c.s_gain;}
+ // yaesu box uses …2-suffixed ids (to avoid dup ids with the kenwood box)
+ // -> map onto the canonical keys the argv builder reads.
+ if(fam()==='yaesu'){c.rig_serial_port=c.rig_serial_port2;c.rig_baud=c.rig_baud2;
+   c.rigctld_host=c.rigctld_host2;c.rigctld_port=c.rigctld_port2;
+   c.soapy_driver=c.soapy_driver2;c.gain=c.gain2;c.direct_samp=c.direct_samp2;}
  return c;
 }
 function setCfg(c){FIELDS.forEach(i=>{const el=document.getElementById(i);if(el&&c[i]!==undefined)el.value=c[i];});
- if(c.adapter){document.getElementById('adapter').value=c.adapter;}onAdapter();}
+ if(c.adapter){document.getElementById('adapter').value=c.adapter;}
+ // yaesu profiles store canonical keys; mirror them back into the …2 DOM fields.
+ if(c.adapter==='yaesu'){const set=(id,v)=>{const e=document.getElementById(id);if(e&&v!==undefined)e.value=v;};
+   set('rig_serial_port2',c.rig_serial_port);set('rig_baud2',c.rig_baud);
+   set('rigctld_host2',c.rigctld_host);set('rigctld_port2',c.rigctld_port);
+   set('soapy_driver2',c.soapy_driver);set('gain2',c.gain);set('direct_samp2',c.direct_samp);}
+ onAdapter();}
 async function start(){msg('...');
  const r=await (await fetch('/api/start',{method:'POST',body:JSON.stringify(cfg())})).json();
  msg(r.ok?'started':('⚠ '+(r.error||'failed')),r.ok);poll();}
@@ -529,7 +594,7 @@ async function loadProfiles(){const st=await (await fetch('/api/profiles')).json
    if(n===st.autostart)o.textContent=n+'  (auto)';s.appendChild(o);});}
 function loadProfile(){const n=document.getElementById('profsel').value;if(!n||!PROFILES[n])return;
  setCfg(PROFILES[n]);document.getElementById('profname').value=n;
- setTimeout(()=>{onRadio('icom');onRadio('kenwood');},0);msg('loaded "'+n+'"',true);}
+ setTimeout(()=>{onRadio('icom');onRadio('kenwood');onRadio('yaesu');},0);msg('loaded "'+n+'"',true);}
 async function saveProfile(){const name=document.getElementById('profname').value.trim();
  if(!name){msg('⚠ give the profile a name');return;}
  const r=await (await fetch('/api/profiles/save',{method:'POST',body:JSON.stringify(
