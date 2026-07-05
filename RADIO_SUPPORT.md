@@ -93,7 +93,7 @@ it in the setup web UI). hamlib model ids confirmed on the Pi5 gate's hamlib 202
 | FT-991A | hamlib | soapy-iftap | FLEX-6700 | 1035 | HF/6m/2m/70cm | GUESS/VERIFY |
 | FTDX10 | hamlib | soapy-iftap | FLEX-6600 | 1042 | HF/6m | scope not over CAT; VERIFY id |
 | FT-710 | hamlib | soapy-iftap | FLEX-6600 | 1046 | HF/6m | GUESS/VERIFY |
-| FT-817/818 | hamlib | audio-fft | FLEX-6700 | 1020 | HF/6m/2m/70cm | QRP, no scope |
+| FT-817/818 | hamlib | soapy-iftap | FLEX-6700 | 1020 | HF/6m/2m/70cm | QRP, no scope → dongle for pan |
 
 ### SDR / other (NOT CAT — IQ source family, `soapy`/HPSDR adapter)
 | Device | control | spectrum | advertise | bands | status |

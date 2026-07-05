@@ -32,8 +32,10 @@ class YaesuRadio:
     hamlib_model: int              # `rigctld -m N` id (rigctl -l)
     advertise: str                 # Flex model presented to AE (drives native band caps)
     bands: List[Band] = field(default_factory=list)
-    # Yaesu CAT gives no scope -> spectrum comes from an IF-tap dongle.
-    spectrum: str = "soapy-iftap"  # "soapy-iftap" (dongle, CAT-steered) | "audio-fft" (last resort)
+    # Yaesu CAT gives no scope -> spectrum comes from an IF-tap dongle (RTL-SDR V4).
+    # NB the gate does NOT implement audio-FFT spectrum: a SignaLink/soundcard is for
+    # audio/digimode only; AE's own audio chain provides an audioscope if wanted.
+    spectrum: str = "soapy-iftap"  # dongle, CAT-steered (the only spectrum path)
     hf_dongle_needed: bool = True  # HF coverage needs an HF-capable dongle (V4/upconverter/RX888)
     verified: bool = False
     notes: str = ""
@@ -77,9 +79,11 @@ REGISTRY = {
     "FT-817": YaesuRadio(
         model="FT-817", hamlib_model=1020, advertise="FLEX-6700",
         bands=_HF + _6M + _2M + _70CM,
-        spectrum="audio-fft", hf_dongle_needed=True, verified=False,
+        spectrum="soapy-iftap", hf_dongle_needed=True, verified=False,
         notes="QRP HF/6m/2m/70cm. hamlib -m 1020 (817/818 share this on older hamlib; "
-              "818 may be 1041 on newer — VERIFY). No scope; audio-fft last resort."),
+              "818 may be 1041 on newer — VERIFY). No scope -> IF-tap dongle for the pan "
+              "(the gate does NOT do audio-FFT spectrum; AE's own audio chain covers an "
+              "audioscope if wanted)."),
 }
 
 
