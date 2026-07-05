@@ -38,8 +38,13 @@ class YaesuAdapter(KenwoodAdapter):
         # the already-resolved row's fields through explicit kwargs instead.
         row = get_yaesu(model)
         if row is not None:
-            kwargs.setdefault("hamlib_model", row.hamlib_model)
-            kwargs.setdefault("advertise", row.advertise)
+            # Fill from the registry when the caller didn't supply a value. Treat an
+            # explicit None (the CLI passes --hamlib-model's None default through)
+            # as "not supplied" — setdefault alone won't override a present None.
+            if kwargs.get("hamlib_model") is None:
+                kwargs["hamlib_model"] = row.hamlib_model
+            if kwargs.get("advertise") is None:
+                kwargs["advertise"] = row.advertise
         super().__init__(model=model, serial_baud=serial_baud,
                          serial_conf=serial_conf, station=station,
                          serial=serial, **kwargs)

@@ -68,6 +68,8 @@ def build_adapter(name, args):
         # row; --model only overrides advertise if the user changed it off the default.
         return cls(model=args.yaesu_model,
                    rigctld_host=args.rigctld_host, rigctld_port=args.rigctld_port,
+                   # None => let the Yaesu registry pick the model id (FT-847=1001);
+                   # only override when the user passed --hamlib-model explicitly.
                    hamlib_model=args.hamlib_model,
                    serial_port=args.rig_serial_port, serial_baud=args.rig_baud,
                    rigctld_bin=args.rigctld_bin,
