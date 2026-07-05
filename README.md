@@ -42,7 +42,19 @@ radio chooser with a live panadapter and waterfall.
 - **Runs headless as a service** — on a Raspberry Pi it's a flash-and-go appliance;
   each radio is its own systemd service, always ready in AE's chooser.
 
+> ⚠️ **Receive & control only — no transmit yet.** Aether-gate does frequency/mode
+> control and spectrum/waterfall/audio *receive*. **It does not key the radio.** If you
+> press TX/MOX/TUNE in AetherSDR, AE's UI will light up as if transmitting, but **no RF
+> is produced** — the gate acknowledges the transmit command and reports "transmitting"
+> back to AE, but never asserts PTT on the rig. This applies to **every** radio family
+> below (Icom LAN, hamlib/CAT, dongles). PTT wiring + arm/tx-band safety is the next
+> planned feature; until then treat the gate as a receiver + controller. See
+> *[How it works](#how-it-works)* for the detail.
+
 ## Supported radios
+
+**All entries below are receive + control.** The Status column is about how well the
+**RX/control** path works; **none of these transmit yet** (see the note above).
 
 | Family | How | Spectrum | Status |
 |---|---|---|---|
@@ -176,6 +188,16 @@ Writing an adapter is small: subclass `aether_gate.adapters.base.RadioAdapter`, 
 `provides`, implement one source method, and register it. See `adapters/sim.py` for
 the reference and [DESIGN.md](DESIGN.md) / [RADIO_SUPPORT.md](RADIO_SUPPORT.md) for
 the architecture.
+
+**Why there's no transmit.** When AE keys TX it sends a `transmit set mox=1` command.
+The engine's handler records the state and echoes an interlock/MOX status back to AE
+(so AE's UI shows "transmitting"), but there is **no adapter-TX seam** — it never calls
+down to the radio to assert PTT. The hamlib backend *has* a working `set_ptt` (`T 1/0`)
+and the Icom LAN path *could* send CI-V `1C 00`, but nothing invokes them from the
+transmit handler yet. So keying is cosmetic end-to-end and no RF leaves the rig. Wiring
+this up (PTT seam + a default-off arm flag + TX-band limiting + a TX-audio route) is the
+next planned milestone; it's kept deliberately unwired until that safety scaffolding
+exists, because a real transceiver on a real antenna/amp is high blast radius.
 
 ```
 aether_gate/
