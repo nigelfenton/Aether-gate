@@ -1,0 +1,44 @@
+# Aether-gate - IC-7300 USB CI-V bridge as a persistent systemd service.
+# Copyright (C) 2026 Nigel Fenton (G0JKN). GPL-3.0-or-later.
+#
+# Install (edit WorkingDirectory/User/IPs/ports first):
+#   sudo cp aether-gate-7300.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now aether-gate-7300
+#   journalctl -u aether-gate-7300 -f
+
+[Unit]
+Description=Aether-gate - IC-7300 USB bridge to AetherSDR (RX/control, no TX)
+Documentation=https://github.com/nigelfenton/Aether-gate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/gate
+Environment=PYTHONPATH=/home/pi/gate
+Environment=PYTHONUNBUFFERED=1
+
+# Stop wfweb/wfwebrtc before enabling this service if they normally own the
+# same IC-7300 USB serial/audio devices.
+ExecStart=/usr/bin/python3 -m aether_gate \
+    --adapter icom7300 \
+    --usb-civ-port /dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_IC-7300_03031092-if00-port0 \
+    --usb-civ-baud 115200 \
+    --civ-addr 0x94 \
+    --ip 10.0.1.82 --ae 10.0.1.10 \
+    --serial GATE7300 --station "Icom-IC-7300" --ctl-port 8731
+
+# The adapter keeps RTS/DTR low on open and close. Give Python time to run the
+# SIGTERM handler and adapter.close(); this avoids leaving the serial device in
+# an unsafe control-line state.
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=10
+
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

@@ -100,6 +100,9 @@ def _build_argv(cfg):
     elif ad == "icom9700":
         add("--radio-ip", "radio_ip"); add("--user", "user"); add("--pass", "password")
         add("--radio-local-ip", "radio_local_ip"); add("--civ-addr", "civ_addr")
+    elif ad == "icom7300":
+        add("--usb-civ-port", "usb_civ_port"); add("--usb-civ-baud", "usb_civ_baud")
+        add("--civ-addr", "civ_addr"); add("--usb-audio-device", "usb_audio_device")
     elif ad == "kenwood":
         add("--kw-model", "kw_model"); add("--rig-serial-port", "rig_serial_port")
         add("--rig-baud", "rig_baud"); add("--rigctld-host", "rigctld_host")
@@ -123,6 +126,7 @@ def _missing_fields(cfg):
     ad = cfg.get("adapter", "sim")
     req = {
         "icom9700": [("radio_ip", "Radio IP"), ("user", "Username"), ("password", "Password")],
+        "icom7300": [("usb_civ_port", "USB CI-V serial port")],
         "kenwood": [("kw_model", "Radio model")],
         "yaesu": [("yaesu_model", "Radio model")],
     }.get(ad, [])
@@ -246,6 +250,11 @@ def _known_checks():
             add("Radios (saved profiles)", name, cfg["radio_ip"], "ok" if ok else "bad",
                 "responds on Icom LAN :50001" if ok
                 else "no reply - powered on? Network function enabled? correct IP?")
+        elif ad == "icom7300" and cfg.get("usb_civ_port"):
+            port = cfg["usb_civ_port"]
+            present = port in sp or os.path.exists(port)
+            add("Radios (saved profiles)", name, port, "ok" if present else "bad",
+                "IC-7300 CI-V serial port present" if present else "serial port not found - plugged in?")
         elif ad in ("kenwood", "yaesu") and cfg.get("rig_serial_port"):
             port = cfg["rig_serial_port"]
             present = port in sp or os.path.exists(port)
@@ -401,6 +410,21 @@ PAGE = r"""<!DOCTYPE html><html><head><meta charset=utf-8>
   </div>
 </div>
 
+<!-- IC-7300 (USB CI-V + USB audio) -->
+<div id=box_icom7300 class=fambox style=display:none>
+  <div class=card>
+    <div class=row>
+      <div><label>USB CI-V serial port</label><input id=usb_civ_port placeholder="/dev/ttyUSB0"></div>
+      <div><label>Baud</label><input id=usb_civ_baud value=115200></div>
+    </div>
+    <div class=row>
+      <div><label>CI-V address</label><input id=civ_addr_7300 value=0x94></div>
+      <div><label>USB audio device</label><input id=usb_audio_device placeholder="auto (USB Audio CODEC)"></div>
+    </div>
+    <div class=hint style="margin-top:4px;color:#6e7681">TX/PTT stays disabled. RTS and DTR are held low when opening and closing the serial port.</div>
+  </div>
+</div>
+
 <!-- KENWOOD (CAT via hamlib + IF-tap dongle) -->
 <div id=box_kenwood class=fambox style=display:none>
   <div class=card>
@@ -512,11 +536,13 @@ PAGE = r"""<!DOCTYPE html><html><head><meta charset=utf-8>
 <script>
 let RADIOS={icom:{},kenwood:{},yaesu:{}};
 const FIELDS=['adapter','pattern','radio_ip','civ_addr','user','password','radio_local_ip',
+ 'usb_civ_port','usb_civ_baud','civ_addr_7300','usb_audio_device',
  'kw_model','rig_serial_port','rig_baud','rigctld_host','rigctld_port','soapy_driver','gain','direct_samp',
  'yaesu_model','rig_serial_port2','rig_baud2','rigctld_host2','rigctld_port2','soapy_driver2','gain2','direct_samp2',
  's_driver','s_gain','samp_rate','soapy_args','icom_model','model','station','serial','ip','ae','port','ctl_port','fps','bins'];
 const HINTS={
  icom:'① Icom LAN rig (IC-9700 etc.): enter the radio’s IP + the Network username/password you set in its menu. CI-V address auto-fills. ② Start.',
+ icom7300:'① IC-7300 USB: set the CI-V serial port. Audio comes from the radio’s USB Audio CODEC. ② Start.',
  kenwood:'① Kenwood CAT rig: pick the model, set the serial COM port + baud (TS-450 = 4800). A SoapySDR dongle gives the waterfall. ② Start.',
  yaesu:'① Yaesu CAT rig: pick the model, set the serial COM port + baud (FT-847 = 4800; FT-991A = 38400). A SoapySDR dongle gives the waterfall. ② Start.',
  soapy:'① An SDR dongle (RTL-SDR/Airspy/SDRplay): pick the driver + gain. ② Start.',
@@ -524,9 +550,9 @@ const HINTS={
 
 async function init(){
  const ads=await (await fetch('/api/adapters')).json();
- const nice={icom9700:'Icom (LAN)',kenwood:'Kenwood (CAT)',yaesu:'Yaesu (CAT)',soapy:'SDR dongle',sim:'Test / sim'};
+ const nice={icom9700:'Icom (LAN)',icom7300:'IC-7300 (USB)',kenwood:'Kenwood (CAT)',yaesu:'Yaesu (CAT)',soapy:'SDR dongle',sim:'Test / sim'};
  const as=document.getElementById('adapter'); as.innerHTML='';
- ['icom9700','kenwood','yaesu','soapy','sim'].filter(a=>ads.includes(a)).forEach(a=>{
+ ['icom7300','icom9700','kenwood','yaesu','soapy','sim'].filter(a=>ads.includes(a)).forEach(a=>{
    const o=document.createElement('option');o.value=a;o.textContent=nice[a]||a;as.appendChild(o);});
  RADIOS=await (await fetch('/api/radios')).json();
  fill('icom_model',Object.keys(RADIOS.icom)); fill('kw_model',Object.keys(RADIOS.kenwood));
@@ -534,12 +560,14 @@ async function init(){
  await loadProfiles(); onAdapter(); onRadio('icom'); onRadio('kenwood'); onRadio('yaesu'); poll(); setInterval(poll,2000);
 }
 function fill(id,keys){const s=document.getElementById(id);s.innerHTML='';keys.forEach(k=>{const o=document.createElement('option');o.value=o.textContent=k;s.appendChild(o);});}
-function fam(){const a=document.getElementById('adapter').value;return a==='icom9700'?'icom':a==='kenwood'?'kenwood':a==='yaesu'?'yaesu':a==='soapy'?'soapy':'sim';}
+function fam(){const a=document.getElementById('adapter').value;return a==='icom9700'?'icom':a==='icom7300'?'icom7300':a==='kenwood'?'kenwood':a==='yaesu'?'yaesu':a==='soapy'?'soapy':'sim';}
 function onAdapter(){
  const f=fam();
- ['icom','kenwood','yaesu','soapy','sim'].forEach(x=>document.getElementById('box_'+x).style.display=(x===f)?'block':'none');
+ ['icom','icom7300','kenwood','yaesu','soapy','sim'].forEach(x=>document.getElementById('box_'+x).style.display=(x===f)?'block':'none');
  document.getElementById('hinttext').innerHTML=HINTS[f];
  if(f==='sim'){document.getElementById('model').placeholder='FLEX-6600';}
+ if(f==='icom7300'){document.getElementById('model').value='FLEX-6600';
+   document.getElementById('station').value='Icom-IC-7300';document.getElementById('serial').value='GATE7300';}
 }
 function onRadio(fam){
  if(fam==='icom'){const m=document.getElementById('icom_model').value,r=RADIOS.icom[m];if(!r)return;
@@ -566,6 +594,7 @@ function cfg(){
  c.adapter=document.getElementById('adapter').value;
  // dongle box uses s_driver/s_gain -> map to soapy_* for the argv
  if(fam()==='soapy'){c.soapy_driver=c.s_driver;c.gain=c.s_gain;}
+ if(fam()==='icom7300'){c.civ_addr=c.civ_addr_7300||'0x94';}
  // yaesu box uses …2-suffixed ids (to avoid dup ids with the kenwood box)
  // -> map onto the canonical keys the argv builder reads.
  if(fam()==='yaesu'){c.rig_serial_port=c.rig_serial_port2;c.rig_baud=c.rig_baud2;
@@ -580,6 +609,7 @@ function setCfg(c){FIELDS.forEach(i=>{const el=document.getElementById(i);if(el&
    set('rig_serial_port2',c.rig_serial_port);set('rig_baud2',c.rig_baud);
    set('rigctld_host2',c.rigctld_host);set('rigctld_port2',c.rigctld_port);
    set('soapy_driver2',c.soapy_driver);set('gain2',c.gain);set('direct_samp2',c.direct_samp);}
+ if(c.adapter==='icom7300'&&c.civ_addr){const e=document.getElementById('civ_addr_7300');if(e)e.value=c.civ_addr;}
  onAdapter();}
 async function start(){msg('...');
  const r=await (await fetch('/api/start',{method:'POST',body:JSON.stringify(cfg())})).json();

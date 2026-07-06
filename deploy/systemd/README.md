@@ -24,6 +24,7 @@ open-failure path then detects the phantom, cleans up, and stops, and
 
 | Unit | Purpose | Port |
 |------|---------|------|
+| `aether-gate-7300.service` | IC-7300 USB CI-V + USB-audio bridge, RX/control only | ctl :8731 |
 | `aether-gate-9700.service` | Always-on IC-9700 LAN bridge | ctl :8732 |
 | `kenwood-gate.service` | Kenwood CAT + SDR-spectrum bridge | ctl :8734 |
 | `aether-gate-setup.service` | First-boot Setup UI (interactive) | :8730 |
@@ -32,6 +33,10 @@ open-failure path then detects the phantom, cleans up, and stops, and
 
 Each unit has `EDIT THESE` markers — set the radio IP/credentials, this host's
 LAN `--ip`, and AE's `--ae` IP before installing.
+
+For the IC-7300 unit, stop `wfweb` / `wfwebrtc` first if they normally own the
+same USB serial/audio devices. The IC-7300 adapter is intentionally RX/control
+only: it does not send CI-V PTT and it keeps RTS/DTR low on open and close.
 
 ```sh
 sudo cp aether-gate-9700.service /etc/systemd/system/

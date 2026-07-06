@@ -732,6 +732,10 @@ class Radio:
             model = adapter.capabilities.model or model   # adapter identity drives discovery/caps
         self.model = model if model in MODELS else MODEL
         self.max_slices = MODELS.get(self.model, {}).get("slices", 4)   # advertised cap (multi-slice TODO)
+        if adapter is not None and getattr(adapter, "capabilities", None) is not None:
+            cap_slices = getattr(adapter.capabilities, "max_slices", None)
+            if cap_slices:
+                self.max_slices = max(1, int(cap_slices))
         # Per-radio identity, so many radios can live in one process (the "rack").
         # Each value must be unique per radio or AE cross-wires them; derived from
         # radio_id off the base constants below.
@@ -770,6 +774,8 @@ class Radio:
         self.ae_peer_ip = None          # only accept the UDP prime from the connected AE
         self.y_pixels, self.min_dbm, self.max_dbm = 700, -130.0, -20.0
         self.center_mhz, self.span_mhz = CENTER_MHZ, SPAN_MHZ   # track AE's actual pan view
+        self._pan_zoom_prev_span_mhz = {}        # pan id -> span before S/B zoom toggle
+        self._pan_zoom_active = {}               # pan id -> "segment" | "band"
         self.slice_freq = CENTER_MHZ                            # active slice freq (= VFO); mirrors slices[active]
         self.slice_mode = "USB"
         # Aether-gate seam: a real radio knows where it's tuned — seed the pan +
@@ -1000,12 +1006,8 @@ class Radio:
             if "min_dbm" in kvs: self.min_dbm = float(kvs["min_dbm"])
             if "max_dbm" in kvs: self.max_dbm = float(kvs["max_dbm"])
             if "bandwidth" in kvs:
-                self.span_mhz = float(kvs["bandwidth"])
-                # Aether-gate seam: let a real-radio adapter follow AE's pan zoom
-                # (e.g. drive the rig's band-scope span). Optional; no-op in base.
-                if getattr(self, "adapter", None) is not None:
-                    try: self.adapter.set_span(self.span_mhz * 1e6)
-                    except Exception: pass
+                self._set_pan_span_hz(float(kvs["bandwidth"]) * 1e6)
+            zoom_changed = self._handle_pan_zoom(pid, kvs)
             # Retune THIS panadapter by absolute centre= or by band= (AE's band buttons).
             # Per-pan, not radio-global, so stacked pans can sit on different bands; move
             # the pan's slice with it (a band change retunes its receiver, like a real radio).
@@ -1026,10 +1028,10 @@ class Radio:
                     self.center_mhz = new_center           # no pan id: legacy radio-global behaviour
                 self._sync_active_slice()
             self.reply(conn, seq)
-            if pan is not None and new_center is not None:
+            if pan is not None and (new_center is not None or zoom_changed):
                 self.emit_pan_status(conn, pid)            # re-announce the pan's new centre to AE
                 sidx = pan.get("slice")
-                if sidx is not None and sidx in self.slices:
+                if new_center is not None and sidx is not None and sidx in self.slices:
                     self.emit_slice_status(conn, sidx)
         elif c == "sub radio all":
             self.reply(conn, seq)
@@ -1106,20 +1108,20 @@ class Radio:
             if "tune" in kvs: self.tx_tune = kvs["tune"] == "1"
             self.reply(conn, seq)
             self.emit_transmit_status()
+        elif c.startswith("radio set"):
+            kvs = parse_kvs(c)
+            if self.adapter is not None and hasattr(self.adapter, "set_rx_level"):
+                for key, name in (("af_gain", "af_gain"), ("lineout_gain", "af_gain"),
+                                  ("headphone_gain", "af_gain"), ("rf_gain", "rf_gain"),
+                                  ("squelch", "squelch")):
+                    if key in kvs:
+                        try:
+                            self.adapter.set_rx_level(name, int(float(kvs[key]) * 255 / 100))
+                        except Exception as e:
+                            log("[adapter] rx level error:", e)
+            self.reply(conn, seq)
         elif c.startswith("cwx "):                          # AE's CW text keyer
             self.handle_cwx(c)
-            self.reply(conn, seq)
-        elif c.startswith("slice set"):
-            kvs = parse_kvs(c)
-            idx = self._slice_index_from(c)
-            if idx in self.slices:
-                if "audio_mute" in kvs:
-                    self.slices[idx]["muted"] = (kvs["audio_mute"] == "1")
-                    log(f"[slice] {idx} audio_mute={kvs['audio_mute']}")
-                if "mode" in kvs:
-                    self.slices[idx]["mode"] = kvs["mode"]
-                    if self.slices[idx].get("active"):
-                        self.slice_mode = kvs["mode"]
             self.reply(conn, seq)
         elif c.startswith("slice remove"):
             idx = self._slice_index_from(c)
@@ -1136,9 +1138,16 @@ class Radio:
         elif c.startswith("slice set") or c.startswith("slice tune"):
             kvs = parse_kvs(c)
             idx = self._slice_index_from(c)
+            if idx >= self.max_slices:
+                self.reply(conn, seq, code=0x50000000)
+                log(f"[slice] {idx} refused: adapter exposes {self.max_slices} live receiver(s)")
+                return
             sl = self.slices.setdefault(idx, {"freq": self.slice_freq, "mode": self.slice_mode,
                                               "active": False, "pan": self._primary_pan()})
             if "mode" in kvs: sl["mode"] = kvs["mode"]
+            if "audio_mute" in kvs:
+                sl["muted"] = (kvs["audio_mute"] == "1")
+                log(f"[slice] {idx} audio_mute={kvs['audio_mute']}")
             for k in ("RF_frequency", "freq"):
                 if k in kvs: sl["freq"] = float(kvs[k])
             if c.startswith("slice tune"):                 # "slice tune <idx> <freq>" (positional)
@@ -1146,6 +1155,7 @@ class Radio:
                 if len(parts) >= 4:
                     try: sl["freq"] = float(parts[3])
                     except ValueError: pass
+            pan_center_changed = False
             if kvs.get("active") == "1":
                 for s in self.slices.values(): s["active"] = False
                 sl["active"] = True
@@ -1153,6 +1163,14 @@ class Radio:
             if kvs.get("autopan") == "1":                  # Pan Lock on: the pan re-centres on the slice
                 pid = sl.get("pan")
                 if pid in self.pans: self.pans[pid]["center"] = sl["freq"]
+            elif self._adapter_native_centered_scope():
+                # A native rig scope is physically centered on the receiver we
+                # just tuned. Keeping AE's pan center elsewhere makes the
+                # waterfall frequency ruler disagree with the pixels.
+                pid = sl.get("pan")
+                if pid in self.pans and self.pans[pid].get("center") != sl["freq"]:
+                    self.pans[pid]["center"] = sl["freq"]
+                    pan_center_changed = True
             self.reply(conn, seq)
             # SUB-slice tune goes DIRECTLY to the 2nd receiver, regardless of
             # which slice is active (a slice-1 tune while slice 0 is active
@@ -1167,7 +1185,24 @@ class Radio:
                     log("[adapter] sub tune error:", e)
             else:
                 self._sync_active_slice()
+            if idx == self.active_slice and self.adapter is not None:
+                try:
+                    if "filter" in kvs and hasattr(self.adapter, "set_filter"):
+                        self.adapter.set_filter(int(kvs["filter"]))
+                    # Flex sends low/high audio passband edges in Hz. The IC-7300
+                    # CI-V width command controls only the current filter's width,
+                    # so use the absolute passband width and leave shift alone.
+                    lows = [k for k in ("filter_low", "low") if k in kvs]
+                    highs = [k for k in ("filter_high", "high") if k in kvs]
+                    if lows and highs and hasattr(self.adapter, "set_filter_width_hz"):
+                        width = abs(float(kvs[highs[0]]) - float(kvs[lows[0]]))
+                        if width > 0:
+                            self.adapter.set_filter_width_hz(width)
+                except Exception as e:
+                    log("[adapter] filter/control error:", e)
             self.emit_slice_status(conn, idx)
+            if pan_center_changed:
+                self.emit_pan_status(conn, sl.get("pan"))
         else:
             self.reply(conn, seq)
 
@@ -1224,6 +1259,60 @@ class Radio:
         for t in c.split()[2:]:                            # after "slice set"/"slice tune"/"slice remove"
             if t.isdigit(): return int(t)
         return self.active_slice
+
+    def _adapter_native_centered_scope(self):
+        caps = getattr(getattr(self, "adapter", None), "capabilities", None)
+        return bool(getattr(caps, "native_centered_scope", False))
+
+    def _set_pan_span_hz(self, span_hz):
+        self.span_mhz = max(0.001, float(span_hz) / 1e6)
+        # Aether-gate seam: let a real-radio adapter follow AE's pan zoom
+        # (e.g. drive the rig's band-scope span). Optional; no-op in base.
+        if getattr(self, "adapter", None) is not None:
+            try:
+                effective = self.adapter.set_span(self.span_mhz * 1e6)
+                if effective:
+                    self.span_mhz = float(effective) / 1e6
+            except Exception:
+                pass
+        return self.span_mhz
+
+    def _zoom_span_hz(self, mode):
+        caps = getattr(getattr(self, "adapter", None), "capabilities", None)
+        min_hz = float(getattr(caps, "min_span_hz", 5_000.0) or 5_000.0)
+        max_hz = float(getattr(caps, "max_span_hz", 500_000.0) or 500_000.0)
+        if mode == "band":
+            return max(min_hz, max_hz)
+        # SmartSDR's segment zoom means a narrower operating segment. For
+        # native rig scopes such as the IC-7300, map it to a useful mid span
+        # around the current dial rather than retuning to a band-plan segment.
+        return min(max_hz, max(min_hz, 50_000.0))
+
+    def _handle_pan_zoom(self, pid, kvs):
+        if pid is None:
+            pid = self._primary_pan()
+        mode = None
+        state = None
+        if "band_zoom" in kvs:
+            mode, state = "band", str(kvs["band_zoom"]) == "1"
+        if "segment_zoom" in kvs:
+            mode, state = "segment", str(kvs["segment_zoom"]) == "1"
+        if mode is None:
+            return False
+        if state:
+            if pid not in self._pan_zoom_active:
+                self._pan_zoom_prev_span_mhz[pid] = self.span_mhz
+            self._pan_zoom_active[pid] = mode
+            self._set_pan_span_hz(self._zoom_span_hz(mode))
+            log(f"[pan] 0x{pid:08X} {mode}_zoom=1 -> bandwidth={self.span_mhz:.6f}")
+            return True
+        if self._pan_zoom_active.get(pid) == mode:
+            prev = self._pan_zoom_prev_span_mhz.pop(pid, self.span_mhz)
+            self._pan_zoom_active.pop(pid, None)
+            self._set_pan_span_hz(prev * 1e6)
+            log(f"[pan] 0x{pid:08X} {mode}_zoom=0 -> bandwidth={self.span_mhz:.6f}")
+            return True
+        return False
 
     def _sync_active_slice(self):
         sl = self.slices.get(self.active_slice)
