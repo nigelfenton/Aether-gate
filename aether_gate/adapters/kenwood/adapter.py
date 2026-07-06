@@ -46,7 +46,13 @@ class KenwoodAdapter(RadioAdapter):
                  soapy_driver="rtlsdr", soapy_args="", samp_rate=2_040_000,
                  gain_db=40.0, direct_samp=None, agc=False,
                  # AE identity
-                 advertise=None, serial="GATEKENW", station="Kenwood-CAT"):
+                 advertise=None, serial="GATEKENW", station="Kenwood-CAT",
+                 # TX intent — OFF by default. There is no PTT path wired in the
+                 # gate yet (no wants_tx()/hamlib 'T 1' seam), so a real transceiver
+                 # is receive+control-only until that lands. Setting this True only
+                 # ADVERTISES tx_capable to AE; it does NOT yet key the radio. Wire
+                 # it from the setup connection once a tested PTT seam exists.
+                 enable_tx=False):
         self.model = model
         row = get_kenwood(model)
         self._row = row
@@ -72,9 +78,14 @@ class KenwoodAdapter(RadioAdapter):
                                  serial=serial, station=station,
                                  direct_samp=direct_samp, agc=agc)
 
-        # bands= advertised to AE (radio-declared-bands); tx_capable True (real transceiver)
+        # bands= advertised to AE (radio-declared-bands). tx_capable reflects the
+        # opt-in enable_tx flag, NOT a hardcoded "real transceiver" guess: no PTT is
+        # wired yet, so it defaults False (RX+control only, like the icom9700/soapy
+        # adapters). Flipping enable_tx True advertises the capability to AE but does
+        # not key the rig until a wants_tx()/hamlib-PTT seam is implemented.
+        self._enable_tx = bool(enable_tx)
         self.capabilities = AdapterCaps(model=adv, serial=serial, station=station,
-                                        tx_capable=True,
+                                        tx_capable=self._enable_tx,
                                         min_span_hz=48_000.0, max_span_hz=samp_rate,
                                         bands=bands)
 
