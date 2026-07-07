@@ -1,8 +1,9 @@
 # Aether-gate — multi-vendor radio support (design)
 
 **Status:** design · 2026-06-30 · G0JKN. Radio knowledge lives in the GATE (AE stays
-a transparent Flex client). Icom IC-9700 is the only hardware-VERIFIED entry so far;
-everything else is a best-known plan — **VERIFY before relying on it.**
+a transparent Flex client). Icom IC-9700 and IC-7300 RX/control paths are
+hardware-VERIFIED; everything else is a best-known plan — **VERIFY before relying
+on it.**
 
 ## The two axes (this is the whole model)
 
@@ -30,7 +31,9 @@ last resort. SDRs (Radioberry/RTL/Airspy) are `native-iq` and need no CAT at all
   (`rigctl` missing) → TODO: build + resolve `rigctl -l` model IDs. Hamlib's own rig list *is*
   effectively the CAT registry; our table below only adds the gate bits (advertise-model,
   spectrum source, bands).
-- **`usb-civ`:** Icom CI-V over USB serial (7300/7100/9100) — could ride Hamlib too.
+- **`usb-civ` (implemented for IC-7300):** Icom CI-V over USB serial. The IC-7300
+  path also captures RX audio from the radio's USB Audio CODEC and keeps TX/PTT
+  disabled.
 
 ## Spectrum sources
 
@@ -71,7 +74,7 @@ Advertise FLEX-6700 (has built-in 2 m) for rigs with 2 m; FLEX-6600 for HF+6 m. 
 | IC-7610 | native-lan | civ-scope | FLEX-6600 | HF/6m | LAN family |
 | IC-R8600 | native-lan | civ-scope | FLEX-6700 | 10kHz–3GHz RX | RX-only |
 | IC-905 | native-lan | civ-scope | FLEX-6700 | 2m→10GHz | most bands via XVTR |
-| IC-7300 | usb-civ/hamlib | civ-scope | FLEX-6600 | HF/6m | needs usb transport |
+| IC-7300 | usb-civ | civ-scope + USB audio | FLEX-6600 | HF/6m | ✅ VERIFIED RX/control; TX disabled |
 | IC-7100 | usb-civ/hamlib | audio-fft | FLEX-6700 | HF/6m/2m/70cm | no 27h scope |
 | IC-9100 | usb-civ/hamlib | soapy-iftap | FLEX-6700 | HF/6m/2m/70cm(+23cm opt) | no scope |
 

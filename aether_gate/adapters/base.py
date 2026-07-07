@@ -34,6 +34,8 @@ class AdapterCaps:
     serial: str = ""               # advertised serial (blank -> core derives one)
     station: str = ""              # station name AE displays (blank -> core default)
     tx_capable: bool = False       # source can transmit (real transceiver) vs RX-only (dongle/WebSDR)
+    max_slices: int = None         # optional override for real receiver count
+    native_centered_scope: bool = False  # spectrum pixels are centered on the live receiver
     min_span_hz: float = 48_000.0  # narrowest span the source can render
     max_span_hz: float = 14_000_000.0
     # Bands the REAL radio supports, in AE BandDefs names ("2m","440","23cm").

@@ -59,6 +59,7 @@ radio chooser with a live panadapter and waterfall.
 | Family | How | Spectrum | Status |
 |---|---|---|---|
 | **Icom LAN** (IC-9700, RS-BA1-style) | native LAN / CI-V | radio's own scope | ✅ proven (IC-9700) |
+| **Icom IC-7300 USB** | USB CI-V + USB Audio CODEC | radio's own scope | ✅ proven RX/control only |
 | **Kenwood / Yaesu / Elecraft / Icom-USB** (CAT) | hamlib (`rigctld`) | SDR dongle, CAT-steered | ✅ proven (Kenwood TS-450S); other hamlib rigs = same path |
 | **SoapySDR dongles** (RTL-SDR, Airspy, SDRplay) | SoapySDR | the dongle itself | ✅ |
 | **sim** | built-in test patterns | synthetic | ✅ (no hardware — for trying it out) |
@@ -144,6 +145,12 @@ Anything the Setup page can launch, you can also run directly from the command l
 python -m aether_gate --adapter icom9700 \
     --radio-ip 10.0.0.7 --user <net-user> --pass <net-pass> \
     --ae <AE-ip> --ctl-port 8732
+
+# Icom IC-7300 over USB CI-V + USB audio, RX/control only
+python -m aether_gate --adapter icom7300 \
+    --usb-civ-port /dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_IC-7300_03031092-if00-port0 \
+    --usb-civ-baud 115200 \
+    --ae <AE-ip> --ctl-port 8731
 
 # Kenwood TS-450S: hamlib CAT + an RTL-SDR-Blog V4 dongle for the waterfall
 python -m aether_gate --adapter kenwood --kw-model TS-450S \

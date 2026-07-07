@@ -45,6 +45,14 @@ def build_adapter(name, args):
                    civ_addr=int(str(args.civ_addr), 16), model=model,
                    serial=serial, station=station,
                    usb_civ_port=args.usb_civ_port, usb_civ_baud=args.usb_civ_baud)
+    if name == "icom7300":
+        serial = args.serial if args.serial != "GATE0001" else "GATE7300"
+        station = args.station if args.station != "aether-gate 1" else "Icom-IC-7300"
+        model = args.model if args.model != "FLEX-6600" else "FLEX-6600"
+        return cls(usb_civ_port=args.usb_civ_port, usb_civ_baud=args.usb_civ_baud,
+                   civ_addr=int(str(args.civ_addr), 16), model=model,
+                   serial=serial, station=station,
+                   usb_audio_device=args.usb_audio_device)
     if name == "kenwood":
         serial = args.serial if args.serial != "GATE0001" else "GATEKENW"
         # include the actual Kenwood model so the AE chooser reads e.g.
@@ -115,15 +123,16 @@ def main(argv=None):
     ap.add_argument("--gain", type=float, default=40.0, help="soapy adapter: RX gain dB (ignored if --agc)")
     ap.add_argument("--agc", action="store_true", help="soapy adapter: enable hardware AGC")
     ap.add_argument("--direct-samp", default=None, help="soapy adapter: RTL direct-sampling mode (Q=2 for HF on non-V4)")
-    # icom9700 adapter options
+    # Icom adapter options
     ap.add_argument("--radio-ip", default=None, help="icom9700 adapter: IC-9700 LAN IP")
     ap.add_argument("--user", default=None, help="icom9700 adapter: radio Network username")
     ap.add_argument("--pass", dest="pw", default=None, help="icom9700 adapter: radio Network password")
     ap.add_argument("--radio-port", type=int, default=50001, help="icom9700 adapter: control port (default 50001)")
     ap.add_argument("--radio-local-ip", default=None, help="icom9700 adapter: local IP that reaches the radio (default: autodetect; set when the radio LAN differs from --ip, e.g. gate advertised on Tailscale but radio on the LAN)")
-    ap.add_argument("--civ-addr", default="A2", help="icom9700 adapter: radio CI-V address hex (default A2)")
-    ap.add_argument("--usb-civ-port", default=None, help="icom9700 adapter: USB CI-V serial port (e.g. COM7 or /dev/ttyUSB0 — the 9700's _A port). Enables HYBRID dual-RX: RX2 read/tuned over USB (safe swap) while LAN carries MAIN's waterfall. Omit = MAIN-only.")
-    ap.add_argument("--usb-civ-baud", type=int, default=115200, help="icom9700 adapter: USB CI-V baud (9700 default 115200)")
+    ap.add_argument("--civ-addr", default="A2", help="Icom adapter: radio CI-V address hex (default A2 for 9700; use 94 for 7300)")
+    ap.add_argument("--usb-civ-port", default=None, help="Icom USB CI-V serial port (e.g. COM7 or /dev/ttyUSB0). Required for icom7300; optional RX2 helper for icom9700.")
+    ap.add_argument("--usb-civ-baud", type=int, default=115200, help="Icom USB CI-V baud (default 115200)")
+    ap.add_argument("--usb-audio-device", default=None, help="icom7300 adapter: ALSA capture device for RX audio (default: auto USB Audio CODEC/plughw card)")
     # kenwood adapter options (hamlib control + IF-tap SDR spectrum; reuses --soapy-*/--gain/--samp-rate)
     ap.add_argument("--kw-model", default="TS-2000", help="kenwood adapter: Kenwood model (TS-2000/TS-590SG/TS-890S)")
     ap.add_argument("--rigctld-host", default="127.0.0.1", help="kenwood adapter: rigctld daemon host")
@@ -140,6 +149,11 @@ def main(argv=None):
 
     if args.adapter == "icom9700" and not (args.radio_ip and args.user and args.pw):
         ap.error("--adapter icom9700 requires --radio-ip, --user and --pass")
+    if args.adapter == "icom7300":
+        if not args.usb_civ_port:
+            ap.error("--adapter icom7300 requires --usb-civ-port")
+        if args.civ_addr == "A2":
+            args.civ_addr = "94"
 
     ip = args.ip or local_ip()
     adapter = build_adapter(args.adapter, args)
