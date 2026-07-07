@@ -236,6 +236,10 @@ Aether-gate stands on other people's work:
   and documented the protocol the hard way; this gate is only possible because he did
   that work and released it openly. Attribution and license headers are preserved on
   every derived file. Thank you, Justin. 🙏
+- **The Icom IC-7300 USB adapter was contributed by s53zo.** The receive-safe
+  IC-7300 bridge — USB CI-V control, the radio's native 27h band-scope decode, and
+  USB Audio CODEC RX capture — came in as an external contribution, hardware-verified
+  on the author's own IC-7300. TX/PTT is deliberately left disabled. Thank you! 🙏
 - The FlexRadio-emulation core (discovery, FlexLib control, VITA-49 streaming) comes
   from [flex-sim](https://github.com/nigelfenton/flex-sim).
 - CAT control is [Hamlib](https://hamlib.github.io/); dongle spectrum is
