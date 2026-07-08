@@ -44,7 +44,7 @@ jobs:
         shell: bash
         run: |
           set -e
-          for t in test_smoke test_hamlib test_icom_teardown test_icom7300 test_tune_clamp test_civ_seqtrack; do
+          for t in test_smoke test_hamlib test_icom_teardown test_icom7300 test_tune_clamp test_civ_seqtrack test_icom_audio; do
             echo "::group::$t"
             python -m aether_gate.tests.$t
             echo "::endgroup::"
