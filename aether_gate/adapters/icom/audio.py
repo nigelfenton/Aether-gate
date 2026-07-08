@@ -62,6 +62,7 @@ class Ic9700Audio(UdpBase):
         self._t_reader = None
         self._t_timers = None
         self._last_ping = 0.0
+        self._last_ayt = 0.0             # periodic are-you-there (keeps scope alive)
         self._last_idle = 0.0
         self._last_retx = 0.0
         self.n_sent = 0
