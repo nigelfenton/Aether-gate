@@ -62,7 +62,9 @@ class Ic9700Audio(UdpBase):
         self._t_reader = None
         self._t_timers = None
         self._last_ping = 0.0
-        self._last_ayt = 0.0             # periodic are-you-there (keeps scope alive)
+        self._last_ayt = 0.0
+        self._ayt_count = 0              # discovery retries (0x03) before i-am-here
+        self.n_lost = 0                  # radio asked us to retransmit (loss signal)
         self._last_idle = 0.0
         self._last_retx = 0.0
         self.n_sent = 0
@@ -84,6 +86,22 @@ class Ic9700Audio(UdpBase):
         # (UdpBase already sent 0x06 and keeps the are-you-there/ping/idle
         # cadence via the timer thread.) Nothing to send here.
         pass
+
+    def _on_tick(self, now):
+        # AUDIO SILENCE WATCHDOG (transport-audit find): SDR9700 alerts after
+        # 30 s without audio data (its UdpAudio watchdog; deliberately
+        # conservative — no auto-recovery, audio restarts with the session).
+        # Log once per silent episode so a dead audio stream is visible in the
+        # journal instead of just sounding like a quiet band.
+        if self._connected and self.audio_frames > 0:
+            last = self.last_rx_at or now
+            if now - last > 30.0:
+                if not getattr(self, "_silence_alerted", False):
+                    self._silence_alerted = True
+                    print("[audio] no audio data for 30s - stream silent "
+                          "(recovers with the session)", flush=True)
+            else:
+                self._silence_alerted = False
 
     def _on_audio(self, d):
         # Called by UdpBase._handle for type-0 tracked data. An audio datagram is

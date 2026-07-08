@@ -107,6 +107,7 @@ class _Ic9700Stream(Ic9700Civ):
     def _on_iamready(self):
         # open the data stream + enable the scope (on + output + MAIN), FAST
         # sweep + ±500 kHz span so the advertised pan axis starts truthful.
+        self._ready_seen = True           # arm Ic9700Civ._on_tick's open-retry
         self._send_openclose(opening=True)
         self.enable_scope()
         self.set_speed(0)
@@ -670,6 +671,14 @@ class Icom9700Adapter(RadioAdapter):
                     self._want_reconnect = True
                     print(f"[civ] scope frozen {frozen_for:.0f}s despite re-opens "
                           f"-> session recycle (fallback)", flush=True)
+            # RADIO KICKED US (transport-audit find): the handler now detects the
+            # radio-initiated disconnect (status disc=1). A dead session can't be
+            # revived in place — recycle it (fresh handler resets the flag).
+            if (self._handler is not None
+                    and getattr(self._handler, "radio_disconnected", False)
+                    and not getattr(self, "_want_reconnect", False)):
+                self._want_reconnect = True
+                print("[civ] radio-initiated disconnect -> session recycle", flush=True)
         raw = self._civ.smeter_raw
         if raw is None:
             return None

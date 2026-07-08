@@ -32,6 +32,7 @@ class Ic9700Handler(UdpBase):
         self.audio_local_port = 0
         self.authenticated = threading.Event()
         self.stream_ready = threading.Event()
+        self.radio_disconnected = False  # radio sent status disc=1 (kicked us)
         self.on_civ_ports = None         # callback(civ_port, audio_port)
         self.on_data = self._on_control_data
 
@@ -101,6 +102,20 @@ class Ic9700Handler(UdpBase):
                                                   daemon=True, name="ic9700-token-renew")
             self._renew_thread.start()
 
+    def stop(self):
+        # Transport-audit find: SDR9700 sends a token REMOVAL (sendToken(0x01))
+        # before the 0x05 disconnect and waits briefly for the ack — proper
+        # session hygiene so the radio releases the login slot immediately
+        # instead of aging out a phantom session (the authed=True wedge that
+        # blocked reconnects all night is exactly what un-removed tokens cause).
+        if self.authenticated.is_set():
+            try:
+                self._send_token(0x01)
+                time.sleep(0.3)          # give the ack/flush a moment
+            except Exception:
+                pass
+        super().stop()                   # 0x05 disconnect + close the socket
+
     def _send_conninfo(self):
         # reserve civ/audio local ports (bind temp sockets)
         cs = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); cs.bind((self.local_ip, 0))
@@ -147,10 +162,28 @@ class Ic9700Handler(UdpBase):
             if err == 0xFEFFFFFF:
                 self._fail = "bad credentials"; return
             if not self.authenticated.is_set():
+                # Transport-audit: the reference validates that the reply's
+                # tokrequest matches the one WE sent (a reply meant for a stale
+                # login attempt must not authenticate this one).
+                got_tr = struct.unpack("<H", d[0x1a:0x1c])[0]
+                if got_tr != self._tok_request:
+                    print(f"[ctrl] login reply tokrequest mismatch "
+                          f"(sent 0x{self._tok_request:04x}, got 0x{got_tr:04x}) "
+                          f"- ignoring stale reply", flush=True)
+                    return
                 self.token = struct.unpack("<I", d[0x1c:0x20])[0]
                 self._send_token_confirm()
                 self.authenticated.set()
                 self._start_token_renewal()   # keep the token alive (60 s cadence)
+            return
+
+        # CONNINFO (0x90): radio's per-radio availability status (name / busy /
+        # in-use-by-computer). We don't surface a UI for it; recognize + log the
+        # busy flag so "another client holds the radio" is at least visible.
+        if ln == 0x90:
+            busy = d[0x60] if len(d) > 0x60 else 0
+            if busy:
+                print("[ctrl] radio reports BUSY (in use by another client)", flush=True)
             return
 
         # TOKEN packet (0x40): reply to our confirm (0x02) or RENEWAL (0x05).
@@ -164,10 +197,25 @@ class Ic9700Handler(UdpBase):
                 if resp == 0:
                     print("[ctrl] token renewal OK", flush=True)
                 elif resp == 0xFFFFFFFF:
-                    print("[ctrl] token renewal REJECTED - session will degrade "
-                          "(watchdog will recycle)", flush=True)
+                    # Transport-audit find: SDR9700 does NOT wait to die here — it
+                    # RE-LOGS IN on the same session (UdpHandler.cpp "Radio
+                    # rejected token renewal, performing login"): adopt the ids
+                    # from the rejection packet, drop stream state, send login.
+                    # Far cheaper than the full session recycle the watchdog
+                    # would eventually do.
+                    print("[ctrl] token renewal REJECTED -> re-logging in "
+                          "(reference behaviour)", flush=True)
+                    self.remote_id = struct.unpack("<I", d[0x08:0x0c])[0]
+                    self._tok_request = struct.unpack("<H", d[0x1a:0x1c])[0]
+                    self.token = struct.unpack("<I", d[0x1c:0x20])[0]
+                    self.authenticated.clear()
+                    self._send_login()
                 else:
                     print(f"[ctrl] token renewal: unexpected response 0x{resp:08x}", flush=True)
+            elif reply == 0x02 and reqtype == 0x01:
+                # ack of our token REMOVAL (sent at shutdown) — nothing to do,
+                # but recognizing it keeps the dispatch honest.
+                print("[ctrl] token removal acknowledged", flush=True)
             return
 
         # CAPABILITIES (0x42 + N*0x66; 1 radio = 0xa8): parse MAC/name, request stream
@@ -177,10 +225,20 @@ class Ic9700Handler(UdpBase):
                 self._send_conninfo()
             return
 
-        # STATUS (0x50): the assigned civ/audio ports (big-endian)
+        # STATUS (0x50): the assigned civ/audio ports (big-endian), OR a
+        # radio-initiated DISCONNECT (disc=0x01 — timeout, another client took
+        # the slot, front-panel change...). Transport-audit find: we used to
+        # ignore the disconnect entirely and sit orphaned with stale streams.
         if ln == 0x50:
             err = struct.unpack("<I", d[0x30:0x34])[0]
             disc = d[0x40]
+            if err == 0 and disc == 0x01:
+                print("[ctrl] RADIO DISCONNECTED US (status disc=1) - flagging "
+                      "for session recycle", flush=True)
+                self.radio_disconnected = True
+                self.authenticated.clear()
+                self.stream_ready.clear()
+                return
             if err == 0 and not disc:
                 self.civ_port = struct.unpack(">H", d[0x42:0x44])[0]
                 self.audio_port = struct.unpack(">H", d[0x46:0x48])[0]

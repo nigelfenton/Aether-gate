@@ -70,7 +70,9 @@ class Ic9700Civ(UdpBase):
         self._t_reader = None
         self._t_timers = None
         self._last_ping = 0.0
-        self._last_ayt = 0.0             # periodic are-you-there (keeps scope alive)
+        self._last_ayt = 0.0
+        self._ayt_count = 0              # discovery retries (0x03) before i-am-here
+        self.n_lost = 0                  # radio asked us to retransmit (loss signal)
         self._last_idle = 0.0
         self._last_retx = 0.0
         self.n_sent = 0                  # tracked packets sent (deaf-scope instrumentation)
@@ -95,8 +97,37 @@ class Ic9700Civ(UdpBase):
 
     # --- discovery hook: stream is ready, open it + enable the scope --------
     def _on_iamready(self):
+        self._ready_seen = True          # arm the open-retry (_on_tick)
         self._send_openclose(opening=True)
         self.enable_scope()
+
+    def _on_tick(self, now):
+        # OPEN-RETRY UNTIL DATA FLOWS (transport-audit find): SDR9700's
+        # startCivDataTimer re-sends the data-stream open every 100 ms from
+        # i-am-ready until the first CI-V frame arrives, because a lost open
+        # means a silent, dead scope. We sent it once and hoped. Retry like the
+        # reference; stops itself the moment frames flow.
+        if (getattr(self, "_ready_seen", False) and self._connected
+                and self.frames == 0
+                and now - getattr(self, "_open_retry_at", 0.0) >= 0.1):
+            self._open_retry_at = now
+            try:
+                self._send_openclose(opening=True)
+            except Exception:
+                pass
+
+    def stop(self):
+        # STREAM CLOSE ON TEARDOWN (transport-audit find): SDR9700 sends the
+        # data-stream CLOSE (openclose magic 0x00) before the 0x05 disconnect
+        # (UdpCivData::closeStream). We only ever sent the 0x05 — the radio kept
+        # stream state half-open, which is phantom-session food. Close properly.
+        if not getattr(self, "_close_sent", False):
+            self._close_sent = True
+            try:
+                self._send_openclose(opening=False)
+            except Exception:
+                pass
+        super().stop()
 
     def enable_scope(self):
         # Full bring-up per SDR9700 RadioBackend::sendScopeEnable (it retries

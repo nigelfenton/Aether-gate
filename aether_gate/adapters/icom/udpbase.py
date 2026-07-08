@@ -57,7 +57,9 @@ class UdpBase:
         self._t_reader = None
         self._t_timers = None
         self._last_ping = 0.0
-        self._last_ayt = 0.0             # periodic are-you-there (keeps scope alive)
+        self._last_ayt = 0.0
+        self._ayt_count = 0              # discovery retries (0x03) before i-am-here
+        self.n_lost = 0                  # radio asked us to retransmit (loss signal)
         self._last_idle = 0.0
         self._last_retx = 0.0
         # Instrumentation for the "deaf scope" investigation: counters let a
@@ -142,18 +144,35 @@ class UdpBase:
     def _timer_loop(self):
         while self._run:
             now = time.monotonic()
-            if self._connected:
-                # NB are-you-there (0x03) is NOT a keepalive — SDR9700 fires it only
-                # until the radio replies i-am-here, then STOPS the timer
-                # (UdpCivData.cpp). The real scope-keepalive is the data-stream
-                # re-OPEN in the subclass watchdog (see Ic9700Civ), not here.
+            if not self._connected:
+                # ARE-YOU-THERE RETRY (transport-audit find): SDR9700 retries the
+                # 0x03 discovery every 500 ms until i-am-here arrives, then stops
+                # the timer (it is a discovery RETRY, not a keepalive). We used to
+                # send it exactly once in start() — a lost datagram meant the
+                # connection hung forever. Retry like the reference; after 20
+                # tries log loudly and keep probing at a slower 2 s (a headless
+                # service should keep trying, not give up like the GUI app).
+                period = AREYOUTHERE_PERIOD if self._ayt_count < 20 else 2.0
+                if now - self._last_ayt >= period:
+                    self.send_control(0x03)
+                    self._last_ayt = now
+                    self._ayt_count += 1
+                    if self._ayt_count == 20:
+                        print(f"[{self.name}] radio not answering are-you-there "
+                              f"after 20 tries - still probing every 2s", flush=True)
+            else:
                 if now - self._last_ping >= PING_PERIOD:
                     self.send_ping(); self._last_ping = now
                 if now - self._last_idle >= IDLE_PERIOD:
                     self.send_idle(); self._last_idle = now
                 if now - self._last_retx >= RETRANSMIT_PERIOD:
                     self._send_retransmit_requests(); self._last_retx = now
+            self._on_tick(now)               # subclass hook (open-retry, watchdogs)
             time.sleep(0.02)
+
+    def _on_tick(self, now):
+        """Per-20ms hook for subclasses (Ic9700Civ open-retry-until-data, audio
+        silence watchdog). Default: nothing."""
 
     def _send_retransmit_requests(self):
         with self._lock:
@@ -241,9 +260,12 @@ class UdpBase:
             self.on_data(d)
 
     def _answer_retransmit(self, d):
-        # We don't keep much history pre-auth; reply "not available" (type 0x00, that seq)
+        # Every retransmit the radio asks for = a packet of OURS it lost; count it
+        # (SDR9700 tracks packetsLost -> congestion %). We don't keep much history
+        # pre-auth; reply "not available" (type 0x00, that seq) for unknown seqs.
         if len(d) == CONTROL_SIZE:
             rseq = struct.unpack("<H", d[6:8])[0]
+            self.n_lost += 1
             with self._lock:
                 hit = self._tx_hist.get(rseq)
             if hit:
@@ -256,6 +278,7 @@ class UdpBase:
                 first, last = struct.unpack("<HH", pl[i:i+4])
                 for sq in range(first, (last + 1) & 0x1FFFF):
                     sq &= 0xFFFF
+                    self.n_lost += 1
                     with self._lock:
                         hit = self._tx_hist.get(sq)
                     if hit:
