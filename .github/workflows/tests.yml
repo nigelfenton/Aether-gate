@@ -1,0 +1,51 @@
+name: tests
+
+# Run the offline test suites on every push/PR. They are stdlib-only (no radio,
+# no network, no AE) — the pyserial/SoapySDR imports are deferred, so nothing to
+# pip-install. Fast and hermetic.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} · py${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Full Python range on Linux; one version each on macOS/Windows to keep
+        # the cross-platform check without a 9-way fan-out.
+        os: [ubuntu-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+        include:
+          - os: macos-latest
+            python-version: "3.13"
+          - os: windows-latest
+            python-version: "3.13"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Byte-compile the package
+        run: python -m compileall -q aether_gate
+
+      - name: Run test suites
+        shell: bash
+        run: |
+          set -e
+          for t in test_smoke test_hamlib test_icom_teardown test_icom7300 test_tune_clamp; do
+            echo "::group::$t"
+            python -m aether_gate.tests.$t
+            echo "::endgroup::"
+          done
