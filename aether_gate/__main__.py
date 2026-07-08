@@ -67,7 +67,7 @@ def build_adapter(name, args):
                    samp_rate=args.samp_rate, gain_db=args.gain,
                    direct_samp=args.direct_samp, agc=args.agc,
                    advertise=(args.model if args.model != "FLEX-6600" else None),
-                   serial=serial, station=station)
+                   serial=serial, station=station, enable_tx=args.enable_tx)
     if name == "yaesu":
         serial = args.serial if args.serial != "GATE0001" else "GATEYAES"
         # e.g. "Aether-gate Yaesu-FT-847" in the AE chooser
@@ -85,7 +85,7 @@ def build_adapter(name, args):
                    samp_rate=args.samp_rate, gain_db=args.gain,
                    direct_samp=args.direct_samp, agc=args.agc,
                    advertise=(args.model if args.model != "FLEX-6600" else None),
-                   serial=serial, station=station)
+                   serial=serial, station=station, enable_tx=args.enable_tx)
     return cls()
 
 
@@ -145,6 +145,10 @@ def main(argv=None):
     ap.add_argument("--yaesu-model", default="FT-847", help="yaesu adapter: Yaesu model (FT-847/FT-991A/FTDX10/FT-710/FT-817)")
     ap.add_argument("--serial", default="GATE0001", help="advertised Flex serial (unique per gate; avoids AE chooser collisions)")
     ap.add_argument("--station", default="aether-gate 1", help="station name AE displays (number per dongle: 'aether-gate 1', 'aether-gate 2', ...)")
+    ap.add_argument("--enable-tx", action="store_true",
+                    help="advertise tx_capable=True to AE for a CAT rig (kenwood/yaesu). OFF by "
+                         "default: no PTT is wired yet, so this only makes AE OFFER TX — it does "
+                         "NOT key the radio. Do not enable until a tested PTT seam exists.")
     args = ap.parse_args(argv)
 
     if args.adapter == "icom9700" and not (args.radio_ip and args.user and args.pw):

@@ -31,7 +31,12 @@ class YaesuAdapter(KenwoodAdapter):
     # rigctld drives the Yaesu with hamlib's own per-model defaults.
     def __init__(self, model="FT-847",
                  serial_baud=4800, serial_conf="", station="Yaesu-CAT",
-                 serial="GATEYAES", **kwargs):
+                 serial="GATEYAES",
+                 # TX intent, OFF by default — same contract as the Kenwood parent:
+                 # no PTT is wired, so a Yaesu is RX+control-only (matches this
+                 # module's docstring). Named explicitly (though **kwargs would carry
+                 # it) so the RX-only default is visible at the Yaesu layer too.
+                 enable_tx=False, **kwargs):
         # Resolve the Yaesu row and inject its hamlib_model / advertise / bands by
         # temporarily swapping the registry the parent consults. The parent's
         # __init__ calls kenwood.radios.get(); we override that lookup by passing
@@ -47,7 +52,7 @@ class YaesuAdapter(KenwoodAdapter):
                 kwargs["advertise"] = row.advertise
         super().__init__(model=model, serial_baud=serial_baud,
                          serial_conf=serial_conf, station=station,
-                         serial=serial, **kwargs)
+                         serial=serial, enable_tx=enable_tx, **kwargs)
         # Parent looked the model up in the Kenwood registry (miss -> None) and
         # defaulted bands to (); re-apply the Yaesu row's bands + advertise so AE
         # gets the right radio-declared bands and Flex identity.
