@@ -66,6 +66,8 @@ class UdpBase:
         self.n_sent = 0                  # tracked packets we've sent
         self.n_retx_req = 0              # retransmit REQUESTS we've sent to the radio
         self.n_rx_clears = 0             # times the RX seq tracker reset (gap/rollover)
+        self.n_rx_dgrams = 0             # ALL datagrams received from the radio
+        self.last_rx_at = 0.0            # monotonic time of the last radio datagram
         # subclasses set this to a callable(packet_bytes) for non-control payloads
         self.on_data = None
 
@@ -179,6 +181,13 @@ class UdpBase:
                 continue
             except OSError:
                 break
+            # Ground-truth instrumentation for the deaf-scope stall: count EVERY
+            # datagram the radio sends us + when the last one arrived. If these
+            # keep climbing through a scope stall, the radio is still talking and
+            # the gate is dropping/ignoring scope frames; if they freeze, the
+            # radio itself went silent. (No packet-capture tool on the Pi.)
+            self.n_rx_dgrams += 1
+            self.last_rx_at = time.monotonic()
             if len(d) < CONTROL_SIZE:
                 continue
             typ = struct.unpack("<H", d[4:6])[0]

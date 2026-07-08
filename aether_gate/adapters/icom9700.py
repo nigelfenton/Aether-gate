@@ -778,5 +778,12 @@ class Icom9700Adapter(RadioAdapter):
                          "sent_total": (civ.n_sent if civ else 0),
                          "sent_per_s": sent_rate,
                          "retransmit_reqs": (civ.n_retx_req if civ else 0),
-                         "rx_tracker_resets": (civ.n_rx_clears if civ else 0)},
+                         "rx_tracker_resets": (civ.n_rx_clears if civ else 0),
+                         # ground truth for the deaf-scope stall (2026-07-07): if
+                         # rx_dgrams keeps climbing while fps=0 the radio is still
+                         # sending (session alive, only scope output paused); if it
+                         # freezes + since_last_rx grows, the session truly died.
+                         "rx_dgrams": (civ.n_rx_dgrams if civ else 0),
+                         "since_last_rx_s": (round(time.monotonic() - civ.last_rx_at, 1)
+                                             if civ and civ.last_rx_at else None)},
         }

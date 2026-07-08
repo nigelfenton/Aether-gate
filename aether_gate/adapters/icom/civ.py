@@ -75,6 +75,8 @@ class Ic9700Civ(UdpBase):
         self.n_sent = 0                  # tracked packets sent (deaf-scope instrumentation)
         self.n_retx_req = 0              # retransmit requests sent
         self.n_rx_clears = 0             # RX seq-tracker resets
+        self.n_rx_dgrams = 0             # ALL datagrams received from the radio
+        self.last_rx_at = 0.0            # monotonic time of the last radio datagram
         self.on_data = self._on_civ
         # civ-specific
         self.civ_addr = civ_addr
