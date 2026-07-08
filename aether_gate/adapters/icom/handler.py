@@ -6,6 +6,7 @@
 """Control-stream auth: discovery -> login -> token -> capabilities -> conninfo,
 yielding the radio-assigned civ/audio ports. Built on the threaded UdpBase so the
 ping/idle/retransmit cadence runs throughout (the serial-probe bug fix)."""
+import random
 import socket
 import struct
 import threading
@@ -22,7 +23,15 @@ class Ic9700Handler(UdpBase):
         self.password = password
         self.client_name = name[:16]
         self._auth_seq = 0x30
-        self._tok_request = (id(self) & 0xFFFF) or 1
+        # TRANSPORT-AUDIT FIND (the sneakiest one): the token-request id MUST be
+        # RANDOM PER LOGIN — SDR9700: tokRequest = QRandomGenerator::generate()
+        # in sendLogin(). Ours was id(self)&0xFFFF, which is effectively CONSTANT
+        # across process restarts (deterministic CPython heap) — every session
+        # presented the SAME tokrequest, colliding in the radio's token table
+        # with its own dead predecessors: renewals then "OK" against stale
+        # entries while the real stream lease dies at ~90 s, and the radio
+        # reports "busy (another client)" that is really our own last ghost.
+        self._tok_request = (random.getrandbits(16) & 0xFFFF) or 1
         self.token = 0
         self.mac = b"\x00" * 6
         self.use_guid = False
@@ -67,7 +76,11 @@ class Ic9700Handler(UdpBase):
         struct.pack_into(">H", b, 0x16, self._auth_seq); self._auth_seq += 1
         struct.pack_into("<H", b, 0x1a, self._tok_request)
         struct.pack_into("<I", b, 0x1c, self.token)
-        struct.pack_into("<H", b, 0x24, 0x0798)     # resetcap
+        # resetcap is BIG-endian on the wire — byte-level diff vs SDR9700's
+        # captured renewal proved it: reference sends 07 98 (qToBigEndian),
+        # our old "<H" sent 98 07 = 0x9807, a completely different flags value
+        # in EVERY token confirm + renewal since the port was written.
+        struct.pack_into(">H", b, 0x24, 0x0798)     # resetcap (BE)
         self.send_tracked(bytes(b))
 
     def _send_token_confirm(self):
