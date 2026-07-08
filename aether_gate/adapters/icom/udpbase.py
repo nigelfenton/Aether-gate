@@ -50,7 +50,7 @@ class UdpBase:
         self._ping_seq = 0
         self._lock = threading.Lock()
         self._tx_hist = {}               # seq -> (bytes, time)
-        self._rx_seq = {}                # seq -> time (radio->us tracking)
+        self._rx_last = None             # last radio->us seq seen (single int, wraps at 0x10000)
         self._rx_missing = {}            # seq -> retry count
         self._run = False
         self._connected = False          # got I-am-here
@@ -59,6 +59,13 @@ class UdpBase:
         self._last_ping = 0.0
         self._last_idle = 0.0
         self._last_retx = 0.0
+        # Instrumentation for the "deaf scope" investigation: counters let a
+        # diagnostic (or a test) measure the sustained tracked-packet rate and
+        # whether stalls correlate with retransmit-request bursts, instead of
+        # guessing. Cheap ints; read via diagnostics()/counters().
+        self.n_sent = 0                  # tracked packets we've sent
+        self.n_retx_req = 0              # retransmit REQUESTS we've sent to the radio
+        self.n_rx_clears = 0             # times the RX seq tracker reset (gap/rollover)
         # subclasses set this to a callable(packet_bytes) for non-control payloads
         self.on_data = None
 
@@ -87,6 +94,7 @@ class UdpBase:
                 self._tx_hist.pop(next(iter(self._tx_hist)))
             self._tx_hist[seq] = (bytes(b), time.monotonic())
             self._send_seq = (self._send_seq + 1) & 0xFFFF
+            self.n_sent += 1
         self._send(bytes(b))
         return seq
 
@@ -135,8 +143,15 @@ class UdpBase:
         with self._lock:
             if not self._rx_missing:
                 return
+            # Session is clearly behind (a burst of losses): asking for all of it
+            # back piles traffic onto an already-struggling scope stream — the
+            # amplifier behind the "deaf scope" loop. Drop the backlog and let it
+            # resync instead. (Lost waterfall rows are realtime — a re-sent row is
+            # stale by the time it arrives, so there's nothing to gain.)
             if len(self._rx_missing) > MAX_MISSING:
-                self._rx_missing.clear(); self._rx_seq.clear(); return
+                self._rx_missing.clear(); self._rx_last = None
+                self.n_rx_clears += 1
+                return
             ranges = b""
             drop = []
             for seq, cnt in list(self._rx_missing.items()):
@@ -153,6 +168,7 @@ class UdpBase:
             ln = CONTROL_SIZE + len(ranges)
             pkt = struct.pack("<IHHII", ln, 0x01, 0, self.my_id, self.remote_id) + ranges
             self._send(pkt)
+            self.n_retx_req += 1
 
     # --- reader thread ----------------------------------------------------
     def _reader(self):
@@ -224,25 +240,46 @@ class UdpBase:
                     elif sq != 0xFFFF:
                         self.send_control(0x00, sq)
 
+    @staticmethod
+    def _seq_delta(a, b):
+        """Signed distance a-b on the 16-bit wrapping seq space, in (-32768,32767].
+        Positive = a is ahead of b. Used everywhere so rollover (0xFFFF->0) is
+        handled consistently — the old code mixed this with raw int min()/max(),
+        which mis-judged gaps across the wrap and triggered spurious resets."""
+        d = (a - b) & 0xFFFF
+        return d if d < 0x8000 else d - 0x10000
+
     def _track_rx(self, seq):
         with self._lock:
-            if not self._rx_seq:
-                self._rx_seq[seq] = time.monotonic()
+            if self._rx_last is None:
+                self._rx_last = seq
                 return
-            last = max(self._rx_seq)
-            gap = (seq - last) & 0xFFFF
-            if seq < min(self._rx_seq) or (gap if gap < 0x8000 else gap - 0x10000) > MAX_MISSING:
-                self._rx_seq.clear(); self._rx_missing.clear()
-                self._rx_seq[seq] = time.monotonic(); return
-            if seq not in self._rx_seq:
-                if ((seq - last) & 0xFFFF) > 1:
-                    f = (last + 1) & 0xFFFF
-                    while f != seq:
-                        self._rx_missing.setdefault(f, 0)
-                        f = (f + 1) & 0xFFFF
-                self._rx_seq[seq] = time.monotonic()
-            else:
+            delta = self._seq_delta(seq, self._rx_last)
+            if delta == 0:
+                return                          # duplicate of the last seq — ignore
+            # A jump bigger than the miss window (either direction) = the stream
+            # resynced / rolled far / we fell behind: reset cleanly rather than
+            # enqueue a storm of phantom "missing" seqs (which would feed the
+            # retransmit-request loop that wedges the scope). Count the reset so
+            # a diagnostic can see how often the tracker is thrashing.
+            if abs(delta) > MAX_MISSING:
+                self._rx_missing.clear()
+                self._rx_last = seq
+                self.n_rx_clears += 1
+                return
+            if delta < 0:
+                # a late / reordered packet still inside the window: it fills one
+                # of the gaps we were tracking. Clear just that seq; do NOT rewind
+                # _rx_last (we're still ahead) and do NOT reset the whole set.
                 self._rx_missing.pop(seq, None)
+                return
+            # forward gap of >1 => the in-between seqs are genuinely missing.
+            f = (self._rx_last + 1) & 0xFFFF
+            while f != seq:
+                self._rx_missing.setdefault(f, 0)
+                f = (f + 1) & 0xFFFF
+            self._rx_missing.pop(seq, None)     # this seq arrived (maybe late)
+            self._rx_last = seq
 
     # --- hooks for subclasses --------------------------------------------
     def _on_iamhere(self):

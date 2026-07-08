@@ -63,7 +63,7 @@ class Ic9700Civ(UdpBase):
         self._ping_seq = 0
         self._lock = threading.Lock()
         self._tx_hist = {}
-        self._rx_seq = {}
+        self._rx_last = None             # last radio->us seq (single int; see UdpBase._track_rx)
         self._rx_missing = {}
         self._run = False
         self._connected = False
@@ -72,6 +72,9 @@ class Ic9700Civ(UdpBase):
         self._last_ping = 0.0
         self._last_idle = 0.0
         self._last_retx = 0.0
+        self.n_sent = 0                  # tracked packets sent (deaf-scope instrumentation)
+        self.n_retx_req = 0              # retransmit requests sent
+        self.n_rx_clears = 0             # RX seq-tracker resets
         self.on_data = self._on_civ
         # civ-specific
         self.civ_addr = civ_addr

@@ -565,12 +565,18 @@ class Icom9700Adapter(RadioAdapter):
             if frames != getattr(self, "_wd_frames_last", -1):
                 self._wd_frames_last = frames
                 self._wd_frames_t = now                    # scope is flowing = session alive
+                self._scope_reenabled_this_stall = False   # frames resumed -> re-arm tier 1
             frozen_for = now - getattr(self, "_wd_frames_t", now)
-            if 3.0 <= frozen_for < 10.0 \
-                    and now - getattr(self, "_scope_reenable_t", 0) >= 4.0:
-                self._civ.enable_scope()                   # tier 1: nudge the scope
-                self._scope_reenable_t = now
-                print("[scope] frames stalled -> re-enabling", flush=True)
+            # Tier 1: nudge the scope ONCE per stall episode. The old code re-fired
+            # enable_scope() (3 tracked writes) every 4 s while stalled — i.e. it
+            # ADDED CI-V traffic to an already-struggling session, the amplifier
+            # behind the deaf loop. One nudge, then wait; re-armed only when frames
+            # actually resume (above).
+            if 3.0 <= frozen_for < 12.0 \
+                    and not getattr(self, "_scope_reenabled_this_stall", False):
+                self._civ.enable_scope()
+                self._scope_reenabled_this_stall = True
+                print("[scope] frames stalled -> re-enabling (once)", flush=True)
             elif frozen_for >= 12.0 and not getattr(self, "_want_reconnect", False):
                 self._want_reconnect = True                # tier 2: session deaf -> reconnect
                 print(f"[civ] scope frozen {frozen_for:.0f}s "
@@ -720,6 +726,18 @@ class Icom9700Adapter(RadioAdapter):
                 fps = round((civ.frames - last_n) / (now - last_t), 1)
             self._diag_t, self._diag_n = now, civ.frames
 
+        # Sustained tracked-packet SEND rate (deaf-scope instrumentation): how
+        # many CI-V/control packets/s we push at the radio. This is the number
+        # the "flood wedges the scope" theory needed and never measured.
+        sent_rate = None
+        if civ is not None:
+            now2 = time.monotonic()
+            lt = getattr(self, "_diag_sent_t", None)
+            ln2 = getattr(self, "_diag_sent_n", 0)
+            if lt is not None and now2 > lt:
+                sent_rate = round((civ.n_sent - ln2) / (now2 - lt), 1)
+            self._diag_sent_t, self._diag_sent_n = now2, civ.n_sent
+
         sel_dbm = self._smeter_dbm(civ.smeter_raw) if civ else None
         # NB these are the two VFOs (A/B) of the SELECTED receiver — NOT the two
         # RECEIVERS. 25 00 = active VFO, 25 01 = the other VFO of the same rx.
@@ -755,5 +773,10 @@ class Icom9700Adapter(RadioAdapter):
             "flags": {"sub_receiver": (self.sub_active() if civ else False),
                       "dualwatch_reg": bool(civ.dualwatch) if civ else False},
             "counters": {"tune_ok": (civ.n_fb if civ else 0),
-                         "tune_refused": (civ.n_fa if civ else 0)},
+                         "tune_refused": (civ.n_fa if civ else 0),
+                         # deaf-scope instrumentation:
+                         "sent_total": (civ.n_sent if civ else 0),
+                         "sent_per_s": sent_rate,
+                         "retransmit_reqs": (civ.n_retx_req if civ else 0),
+                         "rx_tracker_resets": (civ.n_rx_clears if civ else 0)},
         }
