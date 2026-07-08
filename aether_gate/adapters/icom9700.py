@@ -113,12 +113,15 @@ class _Ic9700Stream(Ic9700Civ):
         self.set_span(500_000)
         if self.scope_only:
             return                        # USB owns freq/mode — send NO reads here
-        # (LAN-only mode) seed from the SELECTED VFO (25 00 / 26 00).
+        # (LAN-only mode) seed from the SELECTED VFO (25 00 / 26 00) ONLY.
+        # The SUB reads (25 01 / 26 01 / 07 D2 dualwatch) are deliberately gone:
+        # they fed ONLY an unused diagnostics field (leftover from the parked
+        # dual-RX work — receivers() doesn't use them) AND they PROVOKE the radio's
+        # scope stall earlier. Dropping them raised the freeze threshold ~1860 ->
+        # ~2650 frames (+42%) and killed the extra short freezes (measured on the
+        # Pi 2026-07-07). See the deaf-scope notes.
         self._send_civ(bytes([0x25, 0x00]))
-        self._send_civ(bytes([0x25, 0x01]))
         self._send_civ(bytes([0x26, 0x00]))
-        self._send_civ(bytes([0x26, 0x01]))
-        self._send_civ(bytes([0x07, 0xD2]))
 
     def _dispatch(self, d):
         if d.find(b"\x27\x00\x00") >= 0:        # scope waveform frame
@@ -448,9 +451,31 @@ class Icom9700Adapter(RadioAdapter):
         """True when the deaf-session watchdog wants a full CI-V reconnect."""
         return bool(getattr(self, "_want_reconnect", False))
 
+    # Backoff BEFORE each reconnect attempt (seconds). Attempt 1 = 0 = IMMEDIATE.
+    # WHY: the deaf-scope stall is the radio pausing its 27h scope output while the
+    # SESSION STAYS ALIVE (proven by pcap 2026-07-07: rx_dgrams keeps climbing, radio
+    # keeps pinging). Only a FRESH session restarts scope output — but the capture
+    # shows the radio accepts a new session ~1 MILLISECOND after our 0x05 disconnect
+    # (are-you-there -> i-am-here, instant). The old unconditional sleep(30) before
+    # attempt 1 was cargo-culted from the SEPARATE phantom-session/auth-wedge cases
+    # (see the recovery playbook) — it made every stall a ~30 s dead waterfall for
+    # nothing. So: try immediately; only wait if a retry is actually needed (a
+    # genuinely wedged session does still want the stale window to age out).
+    _RECONNECT_BACKOFF_S = (0.0, 2.0, 8.0, 20.0)
+    # Minimum gap between session recycles. The freeze is a radio-side ~2650-frame
+    # scope cap (unavoidable) that recurs roughly every 60-90 s, so a healthy
+    # recycle cadence is ~1/minute. If recycles start coming FASTER than this floor,
+    # we're not recovering — we're churning, and hammering fresh sessions at the
+    # radio wedges its RS-BA1 stack into the authed=True/None phantom state (seen
+    # live 2026-07-07: a recycle storm needed a manual restart to clear). So rate-
+    # limit: never recycle more often than this; if the scope re-freezes within the
+    # cooldown, ride it out (a longer blip) rather than pile on and wedge the radio.
+    _RECYCLE_MIN_GAP_S = 25.0
+
     def reconnect(self):
-        """Tear down + re-establish the CI-V session after it went deaf mid-run.
-        The radio needs its ~15-25 s stale window to clear, so retry patiently.
+        """Tear down + re-establish the CI-V session after the scope went deaf.
+        Fast path: immediate fresh session (the radio accepts it in ~1 ms); only
+        the RETRY attempts back off, for the rarer wedged-session case.
         Called by the engine off the stream/poll thread (open() blocks)."""
         print("[civ] reconnecting the radio session...", flush=True)
         self._want_reconnect = False
@@ -459,14 +484,16 @@ class Icom9700Adapter(RadioAdapter):
         # reconnect() used full close() -> stopped USB, then _open() built a NEW
         # UsbCiv that fought the old one for COM7 -> RX2 died after any LAN
         # reconnect.) _open() sees self._usb already up and skips re-creating it.
+        # This ALSO sends the 0x05 disconnect the radio needs to release its
+        # session cleanly (phantom-session avoidance) before we build a fresh one.
         try:
             self._close_lan()
         except Exception:
             pass
         self._civ = self._handler = None
-        for attempt in range(4):
-            time.sleep(30.0)                               # let the radio's stale session fully age out
-                                                           # (tonight: needs ≥30s untouched to accept a fresh session)
+        for attempt, backoff in enumerate(self._RECONNECT_BACKOFF_S):
+            if backoff:
+                time.sleep(backoff)                        # only retries wait; attempt 1 is immediate
             try:
                 # _open() DIRECTLY, not open(): open()'s failure wrapper does a
                 # FULL close() which killed the USB channel on every failed
@@ -475,7 +502,9 @@ class Icom9700Adapter(RadioAdapter):
                 # Here a failed attempt only tears down the LAN halves.
                 self._open()                               # re-auth + civ + health gate
                 self._wd_freq_t = time.monotonic()         # reset the watchdog clock
-                print("[civ] reconnect OK", flush=True)
+                self._last_recycle_t = time.monotonic()    # rate-limit clock (see _RECYCLE_MIN_GAP_S)
+                took = "immediate" if attempt == 0 else f"attempt {attempt+1}"
+                print(f"[civ] reconnect OK ({took})", flush=True)
                 return True
             except Exception as e:
                 print(f"[civ] reconnect attempt {attempt+1} failed: {e}", flush=True)
@@ -587,11 +616,12 @@ class Icom9700Adapter(RadioAdapter):
             self._freq_polled_at = now
             if not scope_only:
                 # round-robin ONE read per tick (LAN-only mode dial-sync).
+                # MAIN-only: the SUB reads (25 01 / 26 01 / 07 D2) are gone — they
+                # fed only an unused diagnostics field AND provoked the scope stall
+                # sooner (see _on_iamready + the deaf-scope notes). Fewer freezes,
+                # zero functional loss.
                 READS = (bytes([0x25, 0x00]),   # selected freq (authority)
-                         bytes([0x26, 0x00]),   # selected mode
-                         bytes([0x25, 0x01]),   # SUB freq
-                         bytes([0x26, 0x01]),   # SUB mode
-                         bytes([0x07, 0xD2]))   # dualwatch reg
+                         bytes([0x26, 0x00]))   # selected mode
                 i = getattr(self, "_read_rr", 0)
                 self._civ._send_civ(READS[i % len(READS)])
                 self._read_rr = i + 1
@@ -608,22 +638,29 @@ class Icom9700Adapter(RadioAdapter):
             if frames != getattr(self, "_wd_frames_last", -1):
                 self._wd_frames_last = frames
                 self._wd_frames_t = now                    # scope is flowing = session alive
-                self._scope_reenabled_this_stall = False   # frames resumed -> re-arm tier 1
+                self._recycle_ratelimited = False          # new episode: allow the rate-limit log again
             frozen_for = now - getattr(self, "_wd_frames_t", now)
-            # Tier 1: nudge the scope ONCE per stall episode. The old code re-fired
-            # enable_scope() (3 tracked writes) every 4 s while stalled — i.e. it
-            # ADDED CI-V traffic to an already-struggling session, the amplifier
-            # behind the deaf loop. One nudge, then wait; re-armed only when frames
-            # actually resume (above).
-            if 3.0 <= frozen_for < 12.0 \
-                    and not getattr(self, "_scope_reenabled_this_stall", False):
-                self._civ.enable_scope()
-                self._scope_reenabled_this_stall = True
-                print("[scope] frames stalled -> re-enabling (once)", flush=True)
-            elif frozen_for >= 12.0 and not getattr(self, "_want_reconnect", False):
-                self._want_reconnect = True                # tier 2: session deaf -> reconnect
-                print(f"[civ] scope frozen {frozen_for:.0f}s "
-                      f"-> requesting reconnect", flush=True)
+            # WATCHDOG (pcap-driven, 2026-07-07). The IC-9700 pauses its 27h scope
+            # output on a ~133 s timer while the SESSION STAYS ALIVE (rx_dgrams keeps
+            # climbing). An in-session `27 10 01` re-arm does NOT restart it (proven
+            # dead live, 31x) — ONLY a FRESH session does, and the radio accepts one
+            # in ~1 ms. So there's no "tier 1 nudge" any more (it never worked); once
+            # scope frames have been frozen ~4 s (a real stall, not a blip), request
+            # an immediate session recycle. reconnect() now recovers in ~1-2 s, so a
+            # stall is a brief waterfall blip instead of the old ~30-45 s dead window.
+            if frozen_for >= 4.0 and not getattr(self, "_want_reconnect", False):
+                since_recycle = now - getattr(self, "_last_recycle_t", 0.0)
+                if since_recycle >= self._RECYCLE_MIN_GAP_S:
+                    self._want_reconnect = True
+                    print(f"[civ] scope frozen {frozen_for:.0f}s (session alive) "
+                          f"-> fast session recycle", flush=True)
+                elif not getattr(self, "_recycle_ratelimited", False):
+                    # Re-froze inside the cooldown -> we'd be churning. Ride it out
+                    # (don't hammer the radio into the phantom state); log once.
+                    self._recycle_ratelimited = True
+                    print(f"[civ] scope frozen but only {since_recycle:.0f}s since "
+                          f"last recycle (< {self._RECYCLE_MIN_GAP_S:.0f}s) - riding "
+                          f"it out to avoid wedging the radio", flush=True)
         raw = self._civ.smeter_raw
         if raw is None:
             return None
