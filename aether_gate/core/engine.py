@@ -77,6 +77,14 @@ MODELS = {                       # model -> caps; slice count drives the multi-s
 }
 
 CENTER_MHZ, SPAN_MHZ, BINS, FPS = 14.100, 0.250, 1024, 20
+# Sane tune envelope (MHz). AE is a trusted LAN client, but tune freqs cross the
+# engine->adapter boundary into a physical, transmit-capable rig, so validate here
+# and fail CLOSED (keep the previous freq, log the divergence) rather than dial
+# garbage. Bounds are generous: 30 kHz (below 160m) to 1300 MHz (top of 23cm) —
+# spans every radio the gate bridges (HF rigs .. the R8600 wideband RX). A gate
+# can't over-tighten this without a per-adapter range; declared bands refine it
+# but the envelope is the always-present floor.
+TUNE_MIN_MHZ, TUNE_MAX_MHZ = 0.030, 1300.0
 # Band -> default panadapter centre (MHz). AE's band buttons send
 # "display pan set <pan> band=N"; map the band id to a sensible centre so a pan can be
 # retuned by band, and so stacked pans can sit on different bands (20m + 6m) at once.
@@ -1016,8 +1024,10 @@ class Radio:
                 bc = BAND_CENTERS_MHZ.get(str(kvs["band"]).strip().lower())
                 if bc is not None: new_center = bc
             if "center" in kvs:
-                try: new_center = float(kvs["center"])
-                except ValueError: pass
+                # keep=None so an out-of-envelope center is dropped (no retune),
+                # not silently coerced to the previous pan centre.
+                vc = self._valid_tune_mhz(kvs["center"], None, "pan center")
+                if vc is not None: new_center = vc
             if new_center is not None:
                 if pan is not None:
                     pan["center"] = new_center
@@ -1149,12 +1159,12 @@ class Radio:
                 sl["muted"] = (kvs["audio_mute"] == "1")
                 log(f"[slice] {idx} audio_mute={kvs['audio_mute']}")
             for k in ("RF_frequency", "freq"):
-                if k in kvs: sl["freq"] = float(kvs[k])
+                if k in kvs:
+                    sl["freq"] = self._valid_tune_mhz(kvs[k], sl["freq"], f"slice {idx}")
             if c.startswith("slice tune"):                 # "slice tune <idx> <freq>" (positional)
                 parts = c.split()
                 if len(parts) >= 4:
-                    try: sl["freq"] = float(parts[3])
-                    except ValueError: pass
+                    sl["freq"] = self._valid_tune_mhz(parts[3], sl["freq"], f"slice {idx}")
             pan_center_changed = False
             if kvs.get("active") == "1":
                 for s in self.slices.values(): s["active"] = False
@@ -1313,6 +1323,22 @@ class Radio:
             log(f"[pan] 0x{pid:08X} {mode}_zoom=0 -> bandwidth={self.span_mhz:.6f}")
             return True
         return False
+
+    def _valid_tune_mhz(self, raw, keep, what="tune"):
+        """Boundary check for a tune freq (MHz) arriving from AE before it can
+        reach the adapter/rig. Returns the accepted float, or `keep` (the
+        previous freq) on a malformed or out-of-envelope value — fail CLOSED,
+        never dial garbage. Logs the rejection so a divergence is visible."""
+        try:
+            mhz = float(raw)
+        except (TypeError, ValueError):
+            log(f"[tune] {what} rejected: non-numeric {raw!r} (kept {keep})")
+            return keep
+        if not (TUNE_MIN_MHZ <= mhz <= TUNE_MAX_MHZ):
+            log(f"[tune] {what} rejected: {mhz:.6f} MHz outside "
+                f"{TUNE_MIN_MHZ}-{TUNE_MAX_MHZ} MHz (kept {keep})")
+            return keep
+        return mhz
 
     def _sync_active_slice(self):
         sl = self.slices.get(self.active_slice)

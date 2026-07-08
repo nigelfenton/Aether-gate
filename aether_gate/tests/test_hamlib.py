@@ -118,7 +118,10 @@ def test_kenwood_adapter_constructs():
     a = KenwoodAdapter(model="TS-2000")
     assert a.provides == "iq"
     assert a.capabilities.model == "FLEX-6700"      # TS-2000 has 2m
-    assert a.capabilities.tx_capable is True
+    # TX is opt-in (default RX-only): no PTT is wired, so the gate must not
+    # advertise tx_capable unless explicitly enabled. See PR #5 / issue #3.
+    assert a.capabilities.tx_capable is False
+    assert KenwoodAdapter(model="TS-2000", enable_tx=True).capabilities.tx_capable is True
     assert "2m" in a.capabilities.bands and "20m" in a.capabilities.bands
     d = a.diagnostics()
     assert d["presented_as"] == "FLEX-6700"
