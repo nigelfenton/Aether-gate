@@ -31,6 +31,10 @@ class _FakeHandler:
         self.authenticated = threading.Event()
         self.civ_port = 50002
         self._civ_sock = object()
+        # audio bring-up is skipped when audio_port is falsy (this suite tests the
+        # civ/teardown contract, not the LAN-audio session)
+        self.audio_port = None
+        self._audio_sock = None
     def connect(self, timeout=8.0):
         return getattr(type(self), "ok", False)
     def stop(self):

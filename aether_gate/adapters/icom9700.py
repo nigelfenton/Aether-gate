@@ -25,6 +25,7 @@ from ..core.engine import local_ip as _local_ip
 from .base import RadioAdapter, AdapterCaps, Meters
 from .icom.handler import Ic9700Handler
 from .icom.civ import Ic9700Civ, CONTROLLER_CIV
+from .icom.audio import Ic9700Audio, RADIO_RATE
 
 MODE_TO_CIV = {"LSB": 0x00, "USB": 0x01, "AM": 0x02, "CW": 0x03, "RTTY": 0x04,
                "FM": 0x05, "CW-R": 0x06, "RTTY-R": 0x07, "DV": 0x08, "FM-N": 0x12}
@@ -308,6 +309,7 @@ class Icom9700Adapter(RadioAdapter):
                                         bands=("2m", "440", "23cm"))
         self._handler = None
         self._civ = None
+        self._audio = None             # LAN RX-audio session (Ic9700Audio)
         # HYBRID RX2: optional USB CI-V channel. RX2 needs the 07 B0 swap, which
         # is destructive over LAN (yanks the scope) but HARMLESS over USB (no
         # scope stream) — proven 5/5 on HW 2026-07-03. When a USB CI-V port is
@@ -371,6 +373,21 @@ class Icom9700Adapter(RadioAdapter):
                                "wait ~40s and retry")
         print(f"[civ] stream healthy (freq={self._civ.freq_hz/1e6:.4f} MHz, "
               f"{self._civ.frames} scope frames)", flush=True)
+        # LAN RX AUDIO: the handler negotiated a 48 kHz LPCM16 RX-audio stream in
+        # conninfo (rxenable=1) and the radio assigned an audio port; bring up the
+        # audio session (its own are-you-there handshake, like the CI-V stream) so
+        # the radio actually streams audio. get_audio() then feeds it to AE. If it
+        # can't come up, the gate still runs RX/scope — audio just stays silent.
+        if self._handler.audio_port and self._handler._audio_sock is not None:
+            try:
+                self._audio = Ic9700Audio(lip, self.radio_ip, self._handler.audio_port,
+                                          self._handler._audio_sock)
+                self._audio.start()
+                print(f"[audio] LAN RX-audio session up on port "
+                      f"{self._handler.audio_port}", flush=True)
+            except Exception as e:
+                self._audio = None
+                print(f"[audio] RX-audio bring-up failed: {e} (RX stays silent)", flush=True)
         # HYBRID RX2 over USB — if a USB CI-V port was given, bring it up. The
         # 07 B0 swap to reach RX2 is harmless here (no scope stream on USB), so
         # its background poller tracks RX2 live without touching the LAN scope.
@@ -405,15 +422,18 @@ class Icom9700Adapter(RadioAdapter):
         # that doesn't stress the scope stream.
 
     def _close_lan(self):
-        # Stop ONLY the LAN halves (scope + handler). stop() sends the 0x05
+        # Stop ALL the LAN halves (scope + audio + handler). stop() sends the 0x05
         # disconnect the radio needs to release its RS-BA1 session. Leaves the
-        # USB CI-V channel untouched (used by reconnect()).
-        for obj in (self._civ, self._handler):
+        # USB CI-V channel untouched (used by reconnect()). Closing the audio
+        # session here also stops the per-reconnect socket leak (each _open bound
+        # fresh civ/audio sockets; without this they piled up unread).
+        for obj in (self._civ, self._audio, self._handler):
             try:
                 if obj:
                     obj.stop()
             except Exception:
                 pass
+        self._audio = None
         time.sleep(0.3)
 
     def close(self):
@@ -518,6 +538,29 @@ class Icom9700Adapter(RadioAdapter):
         if not dbm:
             return [ctx.floor] * ctx.n          # flat floor until scope produces pixels
         return _resample(dbm, ctx.n)
+
+    def get_audio(self, n_samples, slice_hz=None, mode=None):
+        """Return n_samples of 24 kHz mono float audio for AE, decimated 2:1 from
+        the radio's 48 kHz LPCM16 LAN stream. Returns None when the audio session
+        isn't up or hasn't buffered enough yet (engine then falls back to silence).
+
+        NB the radio already demodulates for the SELECTED VFO, so slice_hz/mode are
+        ignored here — unlike the SDR adapters, we don't demodulate; we relay."""
+        au = self._audio
+        if au is None:
+            return None
+        # AE wants n_samples @ 24 kHz; the radio streams 48 kHz -> pull 2x, decimate.
+        want48 = int(n_samples) * (RADIO_RATE // 24000)
+        src = au.read_samples(want48)
+        if not src:
+            return None
+        step = RADIO_RATE // 24000              # 2
+        out = src[::step][:n_samples]
+        # If the ring was a little short, pad with the last sample (avoids a click;
+        # the engine treats a short/None frame gracefully). Only pad small gaps.
+        if len(out) < n_samples and out:
+            out += [out[-1]] * (n_samples - len(out))
+        return out or None
 
     def read_meters(self):
         # Async poll: send the read (rate-limited to 10 Hz — the engine calls
@@ -770,6 +813,11 @@ class Icom9700Adapter(RadioAdapter):
                       "live": (fps is not None and fps > 0.5),
                       "bins": (len(civ.latest_dbm) if civ and civ.latest_dbm else None),
                       "total_frames": (civ.frames if civ else 0)},
+            "audio": {"lan_stream": (self._audio is not None),
+                      "packets": (self._audio.audio_frames if self._audio else 0),
+                      "bytes": (self._audio.audio_bytes if self._audio else 0),
+                      "ring_samples": (self._audio.ring_samples if self._audio else 0),
+                      "dropped": (self._audio.dropped if self._audio else 0)},
             "flags": {"sub_receiver": (self.sub_active() if civ else False),
                       "dualwatch_reg": bool(civ.dualwatch) if civ else False},
             "counters": {"tune_ok": (civ.n_fb if civ else 0),

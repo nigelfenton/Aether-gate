@@ -75,7 +75,7 @@ class UdpBase:
     def _send(self, data):
         try:
             self.sock.sendto(data, (self.radio_ip, self.radio_port))
-        except OSError:
+        except (OSError, AttributeError):      # AttributeError: sock closed to None by stop()
             pass
 
     def _control(self, typ, seq=0, ln=CONTROL_SIZE):
@@ -127,6 +127,15 @@ class UdpBase:
             self.send_control(0x05, 0x00)  # disconnect/idle close
         except Exception:
             pass
+        # Close the socket fd. Without this each reconnect leaked the civ/audio
+        # sockets (they were left bound + unread — visible as orphaned sockets
+        # with a stuck Recv-Q). The reader thread already exited on _run=False.
+        try:
+            if self.sock is not None:
+                self.sock.close()
+        except Exception:
+            pass
+        self.sock = None
 
     # --- timer thread (the cadence the radio needs) -----------------------
     def _timer_loop(self):
@@ -179,7 +188,7 @@ class UdpBase:
                 d = self.sock.recvfrom(4096)[0]
             except socket.timeout:
                 continue
-            except OSError:
+            except (OSError, AttributeError):  # closed / set to None by stop()
                 break
             # Ground-truth instrumentation for the deaf-scope stall: count EVERY
             # datagram the radio sends us + when the last one arrived. If these
