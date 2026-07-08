@@ -638,29 +638,38 @@ class Icom9700Adapter(RadioAdapter):
             if frames != getattr(self, "_wd_frames_last", -1):
                 self._wd_frames_last = frames
                 self._wd_frames_t = now                    # scope is flowing = session alive
-                self._recycle_ratelimited = False          # new episode: allow the rate-limit log again
+                self._reopen_active = False                # frames back -> stop re-opening
             frozen_for = now - getattr(self, "_wd_frames_t", now)
-            # WATCHDOG (pcap-driven, 2026-07-07). The IC-9700 pauses its 27h scope
-            # output on a ~133 s timer while the SESSION STAYS ALIVE (rx_dgrams keeps
-            # climbing). An in-session `27 10 01` re-arm does NOT restart it (proven
-            # dead live, 31x) — ONLY a FRESH session does, and the radio accepts one
-            # in ~1 ms. So there's no "tier 1 nudge" any more (it never worked); once
-            # scope frames have been frozen ~4 s (a real stall, not a blip), request
-            # an immediate session recycle. reconnect() now recovers in ~1-2 s, so a
-            # stall is a brief waterfall blip instead of the old ~30-45 s dead window.
-            if frozen_for >= 4.0 and not getattr(self, "_want_reconnect", False):
-                since_recycle = now - getattr(self, "_last_recycle_t", 0.0)
-                if since_recycle >= self._RECYCLE_MIN_GAP_S:
+            # WATCHDOG = SDR9700's actual mechanism (audited from UdpCivData.cpp,
+            # 2026-07-08). The 9700 pauses its 27h scope output while the SESSION
+            # STAYS ALIVE. SDR9700 does NOT reconnect for this — its watchdog, on
+            # >2 s with no CI-V data, re-sends the data-stream OPEN (0x1C0 magic
+            # 0x04, sendOpenClose(false)) on the SAME session every 100 ms until
+            # frames resume. That's it — no 0x05, no re-login, no session churn.
+            # (Our earlier "re-open didn't work" was too slow / paired with a
+            # reconnect; done SDR9700's way — tight 100 ms in-session retries — the
+            # radio resumes the scope with no visible gap.)
+            if frozen_for >= 2.0:
+                if now - getattr(self, "_reopen_last", 0.0) >= 0.1:   # 100 ms cadence
+                    try:
+                        self._civ._send_openclose(opening=True)       # sendOpenClose(false)
+                    except Exception as e:
+                        log("[civ] scope re-open error:", e)
+                    self._reopen_last = now
+                    if not getattr(self, "_reopen_active", False):
+                        self._reopen_active = True
+                        print(f"[civ] scope frozen {frozen_for:.0f}s -> re-opening "
+                              f"data stream (100ms retries, in-session)", flush=True)
+            # FALLBACK: with token renewal (handler.py) the scope should never
+            # pause at all — but if it stays dead >10 s despite the re-opens
+            # (renewal rejected / session genuinely wedged), recycle the session
+            # rather than sit dead forever. Rate-limited to avoid the recycle
+            # storm that wedges the radio's RS-BA1 stack.
+            if frozen_for >= 10.0 and not getattr(self, "_want_reconnect", False):
+                if now - getattr(self, "_last_recycle_t", 0.0) >= self._RECYCLE_MIN_GAP_S:
                     self._want_reconnect = True
-                    print(f"[civ] scope frozen {frozen_for:.0f}s (session alive) "
-                          f"-> fast session recycle", flush=True)
-                elif not getattr(self, "_recycle_ratelimited", False):
-                    # Re-froze inside the cooldown -> we'd be churning. Ride it out
-                    # (don't hammer the radio into the phantom state); log once.
-                    self._recycle_ratelimited = True
-                    print(f"[civ] scope frozen but only {since_recycle:.0f}s since "
-                          f"last recycle (< {self._RECYCLE_MIN_GAP_S:.0f}s) - riding "
-                          f"it out to avoid wedging the radio", flush=True)
+                    print(f"[civ] scope frozen {frozen_for:.0f}s despite re-opens "
+                          f"-> session recycle (fallback)", flush=True)
         raw = self._civ.smeter_raw
         if raw is None:
             return None

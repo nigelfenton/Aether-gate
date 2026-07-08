@@ -57,6 +57,7 @@ class UdpBase:
         self._t_reader = None
         self._t_timers = None
         self._last_ping = 0.0
+        self._last_ayt = 0.0             # periodic are-you-there (keeps scope alive)
         self._last_idle = 0.0
         self._last_retx = 0.0
         # Instrumentation for the "deaf scope" investigation: counters let a
@@ -142,6 +143,10 @@ class UdpBase:
         while self._run:
             now = time.monotonic()
             if self._connected:
+                # NB are-you-there (0x03) is NOT a keepalive — SDR9700 fires it only
+                # until the radio replies i-am-here, then STOPS the timer
+                # (UdpCivData.cpp). The real scope-keepalive is the data-stream
+                # re-OPEN in the subclass watchdog (see Ic9700Civ), not here.
                 if now - self._last_ping >= PING_PERIOD:
                     self.send_ping(); self._last_ping = now
                 if now - self._last_idle >= IDLE_PERIOD:

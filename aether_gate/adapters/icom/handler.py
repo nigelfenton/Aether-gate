@@ -9,6 +9,7 @@ ping/idle/retransmit cadence runs throughout (the serial-probe bug fix)."""
 import socket
 import struct
 import threading
+import time
 
 from .udpbase import UdpBase
 from .obfuscation import obfuscate
@@ -53,17 +54,52 @@ class Ic9700Handler(UdpBase):
         nm = self.client_name.encode("latin-1"); b[0x60:0x60 + len(nm)] = nm
         self.send_tracked(bytes(b))
 
-    def _send_token_confirm(self):
+    def _send_token(self, reqtype):
+        # One packet shape, two uses (SDR9700 UdpHandler::sendToken):
+        #   0x02 = token CONFIRM (once, during login)
+        #   0x05 = token RENEWAL (every 60 s, forever)
         b = bytearray(0x40)
         struct.pack_into("<IHHII", b, 0, 0x40, 0x00, 0, self.my_id, self.remote_id)
         struct.pack_into(">I", b, 0x10, 0x30)
-        b[0x14] = 0x01                   # request
-        b[0x15] = 0x02                   # requesttype = token confirm
+        b[0x14] = 0x01                   # requestreply = request
+        b[0x15] = reqtype & 0xFF         # requesttype
         struct.pack_into(">H", b, 0x16, self._auth_seq); self._auth_seq += 1
         struct.pack_into("<H", b, 0x1a, self._tok_request)
         struct.pack_into("<I", b, 0x1c, self.token)
         struct.pack_into("<H", b, 0x24, 0x0798)     # resetcap
         self.send_tracked(bytes(b))
+
+    def _send_token_confirm(self):
+        self._send_token(0x02)
+
+    # THE DEAF-SCOPE ROOT CAUSE (found 2026-07-08 by auditing SDR9700's
+    # UdpHandler.cpp after Nigel ran the reference app side-by-side and it never
+    # froze): the radio's session TOKEN EXPIRES after ~90 s. When it does, the
+    # radio silently stops the privileged streams — the scope (and audio) die
+    # while ping/idle keep flowing, which is exactly the "deaf scope" we chased
+    # for two days. The ~2650-frame "cap" was never a frame count: it's
+    # ~90 s x 29.5 fps. SDR9700 never freezes because it RENEWS the token every
+    # 60 s (TOKEN_RENEWAL=60000, sendToken(0x05)); we confirmed once at login
+    # and never again. Renew like the reference and the scope never pauses.
+    def _token_renewal_loop(self):
+        last = time.monotonic()
+        while self._run:
+            time.sleep(1.0)
+            if not self._run:
+                break
+            if self.authenticated.is_set() and time.monotonic() - last >= 60.0:
+                try:
+                    self._send_token(0x05)
+                    print("[ctrl] token renewal sent", flush=True)
+                except Exception as e:
+                    print(f"[ctrl] token renewal send failed: {e}", flush=True)
+                last = time.monotonic()
+
+    def _start_token_renewal(self):
+        if getattr(self, "_renew_thread", None) is None:
+            self._renew_thread = threading.Thread(target=self._token_renewal_loop,
+                                                  daemon=True, name="ic9700-token-renew")
+            self._renew_thread.start()
 
     def _send_conninfo(self):
         # reserve civ/audio local ports (bind temp sockets)
@@ -114,6 +150,24 @@ class Ic9700Handler(UdpBase):
                 self.token = struct.unpack("<I", d[0x1c:0x20])[0]
                 self._send_token_confirm()
                 self.authenticated.set()
+                self._start_token_renewal()   # keep the token alive (60 s cadence)
+            return
+
+        # TOKEN packet (0x40): reply to our confirm (0x02) or RENEWAL (0x05).
+        # requestreply@0x14 == 0x02 marks a radio reply; response@0x30:
+        #   0x00000000 = accepted; 0xFFFFFFFF = REJECTED (token dead — the scope
+        #   is about to stop; the adapter's watchdog will recycle the session).
+        if ln == 0x40:
+            reply, reqtype = d[0x14], d[0x15]
+            if reply == 0x02 and reqtype == 0x05:
+                resp = struct.unpack("<I", d[0x30:0x34])[0]
+                if resp == 0:
+                    print("[ctrl] token renewal OK", flush=True)
+                elif resp == 0xFFFFFFFF:
+                    print("[ctrl] token renewal REJECTED - session will degrade "
+                          "(watchdog will recycle)", flush=True)
+                else:
+                    print(f"[ctrl] token renewal: unexpected response 0x{resp:08x}", flush=True)
             return
 
         # CAPABILITIES (0x42 + N*0x66; 1 radio = 0xa8): parse MAC/name, request stream
