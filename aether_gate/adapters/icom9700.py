@@ -26,6 +26,7 @@ from .base import RadioAdapter, AdapterCaps, Meters
 from .icom.handler import Ic9700Handler
 from .icom.civ import Ic9700Civ, CONTROLLER_CIV
 from .icom.audio import Ic9700Audio, RADIO_RATE
+from .icom.radios import _2M, _70CM, _23CM
 
 MODE_TO_CIV = {"LSB": 0x00, "USB": 0x01, "AM": 0x02, "CW": 0x03, "RTTY": 0x04,
                "FM": 0x05, "CW-R": 0x06, "RTTY-R": 0x07, "DV": 0x08, "FM-N": 0x12}
@@ -304,13 +305,15 @@ class Icom9700Adapter(RadioAdapter):
         # IC-9700 covers 2m/70cm/23cm; RX-only here (no TX/PTT wired -> never keys the rig).
         # Span honesty: the 9700 scope does ±2.5k..±500k -> pan width 5 kHz..1 MHz;
         # don't let AE zoom the axis past what the scope can actually show.
-        # bands: AE BandDefs vocabulary — the registry's "70cm" is AE's "440".
-        # With a radio-declared-bands AE the menu offers exactly these three;
-        # older AE ignores the key and falls back to the FLEX-6700's 2m.
+        # bands: from the shared band constants (their wire names are AE BandDefs
+        # vocabulary — _70CM declares "440"). With a radio-declared-bands AE the
+        # menu offers exactly these three; older AE ignores the key and falls back
+        # to the FLEX-6700's 2m.
+        _bands = tuple(b.name for b in (_2M + _70CM + _23CM))   # ("2m","440","23cm")
         self.capabilities = AdapterCaps(model=model, serial=serial, station=station,
                                         tx_capable=False,
                                         min_span_hz=5_000.0, max_span_hz=1_000_000.0,
-                                        bands=("2m", "440", "23cm"))
+                                        bands=_bands)
         self._handler = None
         self._civ = None
         self._audio = None             # LAN RX-audio session (Ic9700Audio)
