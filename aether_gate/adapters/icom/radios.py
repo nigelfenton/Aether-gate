@@ -64,7 +64,7 @@ _HF = [Band("160m", 1.8, 2.0), Band("80m", 3.5, 4.0), Band("60m", 5.25, 5.45),
        Band("10m", 28.0, 29.7)]
 _6M = [Band("6m", 50.0, 54.0)]
 _2M = [Band("2m", 144.0, 148.0)]                              # FLEX-6700 native
-_70CM = [Band("70cm", 430.0, 450.0, needs_xvtr=True)]        # via XVTR
+_70CM = [Band("440", 430.0, 450.0, needs_xvtr=True)]         # via XVTR; wire name "440" = AE BandDefs vocab (AE has no "70cm")
 _23CM = [Band("23cm", 1240.0, 1300.0, needs_xvtr=True)]      # via XVTR
 
 
