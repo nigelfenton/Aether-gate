@@ -614,8 +614,15 @@ class Icom9700Adapter(RadioAdapter):
         # (two masters on the radio's one CI-V state). Keep ONLY the scope
         # frame-progress watchdog (local counter + scope-enable re-fire).
         scope_only = bool(self._usb)
-        if not scope_only and now - self._smeter_sent_at >= 1.0:
-            self._civ.poll_smeter()                        # 15 02 (S-meter) ~1 Hz
+        # S-meter poll at 10 Hz — THIS IS THE 9700's SCOPE KEEPALIVE. Packet capture
+        # of SDR9700 (2026-07-10, capture B) proved it: SDR9700 polls 15 02 at ~10/s
+        # continuously and its scope NEVER freezes over 150s+. Our gate had throttled
+        # this to 1 Hz (the "flood" theory — which capture B showed was BACKWARDS:
+        # SDR9700 sends MORE CI-V, not less, and never freezes). Without the regular
+        # selected-receiver poll the radio stops its 27h scope output after ~101s
+        # (our deaf-scope freeze). Restore 10 Hz to match the working reference.
+        if not scope_only and now - self._smeter_sent_at >= 0.1:
+            self._civ.poll_smeter()                        # 15 02 (S-meter) 10 Hz — scope keepalive
             self._smeter_sent_at = now
         if now - self._freq_polled_at >= 1.0:
             self._freq_polled_at = now
