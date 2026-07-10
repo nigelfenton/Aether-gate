@@ -18,6 +18,7 @@ Scope path live-proven 2026-07-01 (HT key-up on 146.52: raw 53 at RF-gain 0, peg
 at gain max). NB the waveform floor is -130 dBm/pixel and the 9700 SCALES scope
 data by RF gain — a quiet band with gain low legitimately reads all-zero.
 """
+import os
 import threading
 import time
 
@@ -630,6 +631,15 @@ class Icom9700Adapter(RadioAdapter):
                 self._civ._send_civ(READS[i % len(READS)])
                 self._read_rr = i + 1
 
+        # ── SCOPE WATCHDOG — runs EVERY call, NOT gated by the 1 s read tick. ──
+        # BUG FOUND (packet capture 2026-07-10): the openclose re-open below lived
+        # INSIDE the `>= 1.0` block above, so its "100 ms" retry actually fired only
+        # ONCE PER SECOND. The radio ignored the slow 1 Hz re-opens (capture: 1.001s
+        # apart, scope stayed dead the full 11 s until the session recycle). SDR9700
+        # fires sendOpenClose every 100 ms (its own startCivDataTimer) and recovers
+        # seamlessly. Dedented so read_meters (called per frame) drives the true
+        # 100 ms cadence.
+        if True:
             # WATCHDOG (runs in BOTH modes — scope liveness is transport-agnostic) — liveness is measured by SCOPE FRAME PROGRESS, NOT by
             # whether the freq VALUE changed. (Bug 2026-07-02: the old check
             # reset its timer only when freq_hz *changed*, so a STATIONARY rig —
