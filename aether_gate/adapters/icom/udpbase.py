@@ -184,7 +184,15 @@ class UdpBase:
             # resync instead. (Lost waterfall rows are realtime — a re-sent row is
             # stale by the time it arrives, so there's nothing to gain.)
             if len(self._rx_missing) > MAX_MISSING:
-                self._rx_missing.clear(); self._rx_last = None
+                # Too many outstanding gaps: drop the backlog (a re-sent waterfall
+                # row is stale by arrival anyway) BUT keep our stream position.
+                # Mirrors SDR9700 (UdpBase.cpp:346): it clears rxMissing+rxSeqBuf
+                # yet its NEXT packet re-seeds rxSeqBuf cleanly. Ours previously set
+                # _rx_last=None here, which forced the next _track_rx into the
+                # cold-adopt-and-return branch — dropping the LIVE position, so the
+                # scope stalled until the watchdog recycled (THE deaf-scope freeze).
+                # Keeping _rx_last means tracking resumes seamlessly from here.
+                self._rx_missing.clear()
                 self.n_rx_clears += 1
                 return
             ranges = b""
@@ -274,17 +282,23 @@ class UdpBase:
                 self.send_control(0x00, rseq)
         else:
             pl = d[CONTROL_SIZE:]
-            for i in range(0, len(pl) - 3, 4):
-                first, last = struct.unpack("<HH", pl[i:i+4])
-                for sq in range(first, (last + 1) & 0x1FFFF):
-                    sq &= 0xFFFF
-                    self.n_lost += 1
-                    with self._lock:
-                        hit = self._tx_hist.get(sq)
-                    if hit:
-                        self._send(hit[0])
-                    elif sq != 0xFFFF:
-                        self.send_control(0x00, sq)
+            # The radio's retransmit request is a FLAT LIST of individual 16-bit
+            # seqs — one 2-byte little-endian value each — NOT (first,last) ranges.
+            # (Verified against SDR9700 UdpBase.cpp:228, `for i=0x10; i+1<len; i+=2`.)
+            # The old code read them as HH pairs and treated each pair as a range
+            # `range(first, last+1)`, which for a wrapped/out-of-order pair (last <
+            # first, e.g. 65530,4) yielded an EMPTY range — so requested packets
+            # were silently dropped, the radio kept re-asking, and its session
+            # eventually reset (a scope stall). Parse one seq per 2 bytes.
+            for i in range(0, len(pl) - 1, 2):
+                (sq,) = struct.unpack("<H", pl[i:i+2])
+                self.n_lost += 1
+                with self._lock:
+                    hit = self._tx_hist.get(sq)
+                if hit:
+                    self._send(hit[0])
+                elif sq != 0xFFFF:
+                    self.send_control(0x00, sq)
 
     @staticmethod
     def _seq_delta(a, b):
