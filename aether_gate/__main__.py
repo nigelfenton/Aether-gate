@@ -116,6 +116,8 @@ def main(argv=None):
     ap.add_argument("--port", type=int, default=DEFAULT_PORT,
                     help="control/data port to bind+advertise (default 4992; set e.g. 5992 to coexist with AE on one host)")
     ap.add_argument("--ctl-port", type=int, default=8731, help="web control-panel port (0 to disable)")
+    ap.add_argument("--no-update-check", action="store_true",
+                    help="skip the startup check for a newer release (also: env AETHER_GATE_NO_UPDATE_CHECK=1)")
     # soapy adapter options
     ap.add_argument("--soapy-driver", default="rtlsdr", help="soapy adapter: SoapySDR driver (rtlsdr/airspy/sdrplay/...)")
     ap.add_argument("--soapy-args", default="", help="soapy adapter: extra device args, comma kv (e.g. serial=00000001)")
@@ -212,6 +214,11 @@ def main(argv=None):
             + ("  (same-host mode)" if args.port != DISCOVERY_PORT else ""))
         if args.ctl_port:
             log(f"** control panel: http://{ip}:{args.ctl_port}/ **")
+        # Best-effort "is there a newer release?" check — background, non-fatal,
+        # silent on any failure; opt out with AETHER_GATE_NO_UPDATE_CHECK=1.
+        from . import __version__
+        from .update_check import check_for_update
+        check_for_update(__version__, enabled=not args.no_update_check, logfn=log)
         radio.serve()
     except KeyboardInterrupt:
         # Ctrl-C OR SIGTERM (see _graceful) — flip the serve loop off and let
