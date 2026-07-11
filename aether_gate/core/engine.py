@@ -134,6 +134,7 @@ AUDIO_RATE   = 24000      # Hz
 AUDIO_INTERVAL = AUDIO_FRAMES / AUDIO_RATE   # ~5.333 ms / packet → ~187.5 Hz
 AUDIO_SID_BASE = 0x48000010  # base stream id for remote_audio_rx (per-radio: + radio_id)
 DAX_SID_BASE   = 0x48000040  # base stream id for dax_rx (per-radio: + radio_id*4 + (ch-1))
+DAX_TX_SID_BASE = 0x48000080  # base stream id for dax_tx (AE->gate TX audio, per-radio)
                              # AE routes dax_rx packets to its RADE/digital decoder ONLY when the
                              # stream id was registered via a 'stream <id> type=dax_rx ...' status
                              # line (TciServer::statusReceived -> registerDaxStream). The PCC/format
@@ -833,6 +834,15 @@ class Radio:
         # remote_audio_rx stream state
         self.audio_stream_id = None
         self.audio_stop = threading.Event()
+        # dax_tx (AE -> gate TX audio, for digital modes incl. AX.25) state.
+        # The prime loop decodes AE's VITA float32-stereo packets on this stream id
+        # into tx_pcm_ring (int16 LE mono, radio rate); the adapter's TX audio
+        # session drains it to the 9700 while keyed. tx_audio_frames = diagnostics.
+        self.dax_tx_stream_id = None
+        self.tx_pcm_ring = bytearray()
+        self.tx_ring_lock = threading.Lock()
+        self.tx_audio_frames = 0
+        self.tx_audio_bytes = 0
         self.audio_thread = None
         self.audio_tone_hz = 440.0 + radio_id * 220.0  # distinct tone per radio (A4, C#5, …)
         self.audio_reduced_bw = False  # set True when AE sends 'client set send_reduced_bw_dax=1'
@@ -908,6 +918,42 @@ class Radio:
             if self.ae_peer_ip and addr[0] == self.ae_peer_ip and not self.vita_dest:
                 self.vita_dest = addr
                 log(f"[udp] captured VITA dest from prime: {addr} ({len(data)}B)")
+            # dax_tx: AE's TX audio for digital modes (AX.25). A VITA-49 packet
+            # whose stream id (word 1) is our dax_tx id, float32-stereo BE payload
+            # after the 7-word header (mirrors our RX audio_packet, reversed).
+            if (self.dax_tx_stream_id is not None and len(data) >= 32
+                    and self.ae_peer_ip and addr[0] == self.ae_peer_ip):
+                try:
+                    self._decode_dax_tx(data)
+                except Exception:
+                    pass   # a malformed TX packet must never kill the prime loop
+
+    def _decode_dax_tx(self, data):
+        """Decode one AE dax_tx VITA packet -> mono int16 PCM into tx_pcm_ring.
+        Payload is float32 STEREO big-endian after the 28-byte (7-word) header
+        (AudioEngine::buildVitaTxPacket: PCC_IF_NARROW, float32 stereo). We take
+        the left channel, clamp, and store int16 LE at the radio's rate for the
+        adapter's TX audio session to drain while keyed."""
+        sid = struct.unpack_from(">I", data, 4)[0]
+        if sid != self.dax_tx_stream_id:
+            return
+        body = data[28:]                                   # after 7-word VITA header
+        nfloats = len(body) // 4
+        if nfloats < 2:
+            return
+        fs = struct.unpack(f">{nfloats}f", body[:nfloats * 4])
+        # stereo -> mono (left channel), float [-1,1] -> int16 LE
+        mono = fs[0::2]
+        pcm = struct.pack(f"<{len(mono)}h",
+                          *[max(-32768, min(32767, int(v * 32767))) for v in mono])
+        with self.tx_ring_lock:
+            self.tx_pcm_ring.extend(pcm)
+            self.tx_audio_frames += 1
+            self.tx_audio_bytes += len(pcm)
+            # bound the ring to ~0.5 s at 24 kHz mono so a stuck TX can't grow it
+            cap = 24000 * 2 // 2
+            if len(self.tx_pcm_ring) > cap:
+                del self.tx_pcm_ring[:len(self.tx_pcm_ring) - cap]
 
     def serve(self):
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -937,6 +983,8 @@ class Radio:
                 self.tx_mox = False; self.tx_tune = False
                 self.streaming = False; self.ae_peer_ip = None; self.conn = None; self.vita_dest = None
                 self.audio_stop.set(); self.audio_stream_id = None; self.dax_channel = None
+                self.dax_tx_stream_id = None
+                with self.tx_ring_lock: self.tx_pcm_ring.clear()
                 # Free this client's receivers/panadapters on disconnect, like a real radio.
                 # Without it, stale slices/pans pile up across reconnects and the slice
                 # lettering drifts (A -> B -> C on each new connection).
@@ -1155,6 +1203,19 @@ class Radio:
                                   f"client_handle=0x{self.handle_hex}")
                 log(f"[dax] registered dax_rx stream 0x{sid:08X} channel={ch}")
                 self._start_audio_thread()
+            elif kvs.get("type") == "dax_tx":
+                # AE's DAX TX audio stream — carries the TX audio for DIGITAL modes
+                # (AX.25 modem, RADE, etc.) as VITA float32-stereo PCC_IF_NARROW to
+                # our prime port. Register it so AE forwards audio here; the prime
+                # loop decodes packets on this id into the TX ring (Stage 1). The
+                # radio-side TX audio session (Stage 2) then streams it to the 9700
+                # while keyed. Only meaningful on a tx_capable radio.
+                sid = DAX_TX_SID_BASE + self.radio_id
+                self.dax_tx_stream_id = sid
+                self.reply(conn, seq, f"0x{sid:08X}")
+                self.status(conn, f"stream 0x{sid:08X} type=dax_tx "
+                                  f"client_handle=0x{self.handle_hex}")
+                log(f"[dax-tx] registered dax_tx stream 0x{sid:08X}")
             else:
                 self.reply(conn, seq, "0x48000000")
         elif c.startswith("stream remove"):
