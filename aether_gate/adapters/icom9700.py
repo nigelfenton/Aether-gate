@@ -467,15 +467,6 @@ class Icom9700Adapter(RadioAdapter):
     # nothing. So: try immediately; only wait if a retry is actually needed (a
     # genuinely wedged session does still want the stale window to age out).
     _RECONNECT_BACKOFF_S = (0.0, 2.0, 8.0, 20.0)
-    # Minimum gap between session recycles. The freeze is a radio-side ~2650-frame
-    # scope cap (unavoidable) that recurs roughly every 60-90 s, so a healthy
-    # recycle cadence is ~1/minute. If recycles start coming FASTER than this floor,
-    # we're not recovering — we're churning, and hammering fresh sessions at the
-    # radio wedges its RS-BA1 stack into the authed=True/None phantom state (seen
-    # live 2026-07-07: a recycle storm needed a manual restart to clear). So rate-
-    # limit: never recycle more often than this; if the scope re-freezes within the
-    # cooldown, ride it out (a longer blip) rather than pile on and wedge the radio.
-    _RECYCLE_MIN_GAP_S = 25.0
 
     def reconnect(self):
         """Tear down + re-establish the CI-V session after the scope went deaf.
@@ -506,8 +497,6 @@ class Icom9700Adapter(RadioAdapter):
                 # -> slice 1 torn down/recreated = "slices swapping" churn).
                 # Here a failed attempt only tears down the LAN halves.
                 self._open()                               # re-auth + civ + health gate
-                self._wd_freq_t = time.monotonic()         # reset the watchdog clock
-                self._last_recycle_t = time.monotonic()    # rate-limit clock (see _RECYCLE_MIN_GAP_S)
                 took = "immediate" if attempt == 0 else f"attempt {attempt+1}"
                 print(f"[civ] reconnect OK ({took})", flush=True)
                 return True
@@ -638,67 +627,23 @@ class Icom9700Adapter(RadioAdapter):
                 self._civ._send_civ(READS[i % len(READS)])
                 self._read_rr = i + 1
 
-        # ── SCOPE WATCHDOG — runs EVERY call, NOT gated by the 1 s read tick. ──
-        # BUG FOUND (packet capture 2026-07-10): the openclose re-open below lived
-        # INSIDE the `>= 1.0` block above, so its "100 ms" retry actually fired only
-        # ONCE PER SECOND. The radio ignored the slow 1 Hz re-opens (capture: 1.001s
-        # apart, scope stayed dead the full 11 s until the session recycle). SDR9700
-        # fires sendOpenClose every 100 ms (its own startCivDataTimer) and recovers
-        # seamlessly. Dedented so read_meters (called per frame) drives the true
-        # 100 ms cadence.
-        if True:
-            # WATCHDOG (runs in BOTH modes — scope liveness is transport-agnostic) — liveness is measured by SCOPE FRAME PROGRESS, NOT by
-            # whether the freq VALUE changed. (Bug 2026-07-02: the old check
-            # reset its timer only when freq_hz *changed*, so a STATIONARY rig —
-            # freq never changing — looked "deaf" after 8 s and we tore down a
-            # perfectly healthy session ourselves. Pings/echo were fine the
-            # whole time; the session was never actually deaf.) The scope
-            # streams continuously while the session is alive; frozen frames =
-            # real trouble.
-            frames = self._civ.frames
-            if frames != getattr(self, "_wd_frames_last", -1):
-                self._wd_frames_last = frames
-                self._wd_frames_t = now                    # scope is flowing = session alive
-                self._reopen_active = False                # frames back -> stop re-opening
-            frozen_for = now - getattr(self, "_wd_frames_t", now)
-            # WATCHDOG = SDR9700's actual mechanism (audited from UdpCivData.cpp,
-            # 2026-07-08). The 9700 pauses its 27h scope output while the SESSION
-            # STAYS ALIVE. SDR9700 does NOT reconnect for this — its watchdog, on
-            # >2 s with no CI-V data, re-sends the data-stream OPEN (0x1C0 magic
-            # 0x04, sendOpenClose(false)) on the SAME session every 100 ms until
-            # frames resume. That's it — no 0x05, no re-login, no session churn.
-            # (Our earlier "re-open didn't work" was too slow / paired with a
-            # reconnect; done SDR9700's way — tight 100 ms in-session retries — the
-            # radio resumes the scope with no visible gap.)
-            if frozen_for >= 2.0:
-                if now - getattr(self, "_reopen_last", 0.0) >= 0.1:   # 100 ms cadence
-                    try:
-                        self._civ._send_openclose(opening=True)       # sendOpenClose(false)
-                    except Exception as e:
-                        log("[civ] scope re-open error:", e)
-                    self._reopen_last = now
-                    if not getattr(self, "_reopen_active", False):
-                        self._reopen_active = True
-                        print(f"[civ] scope frozen {frozen_for:.0f}s -> re-opening "
-                              f"data stream (100ms retries, in-session)", flush=True)
-            # FALLBACK: with token renewal (handler.py) the scope should never
-            # pause at all — but if it stays dead >10 s despite the re-opens
-            # (renewal rejected / session genuinely wedged), recycle the session
-            # rather than sit dead forever. Rate-limited to avoid the recycle
-            # storm that wedges the radio's RS-BA1 stack.
-            if frozen_for >= 10.0 and not getattr(self, "_want_reconnect", False):
-                if now - getattr(self, "_last_recycle_t", 0.0) >= self._RECYCLE_MIN_GAP_S:
-                    self._want_reconnect = True
-                    print(f"[civ] scope frozen {frozen_for:.0f}s despite re-opens "
-                          f"-> session recycle (fallback)", flush=True)
-            # RADIO KICKED US (transport-audit find): the handler now detects the
-            # radio-initiated disconnect (status disc=1). A dead session can't be
-            # revived in place — recycle it (fresh handler resets the flag).
-            if (self._handler is not None
-                    and getattr(self._handler, "radio_disconnected", False)
-                    and not getattr(self, "_want_reconnect", False)):
-                self._want_reconnect = True
-                print("[civ] radio-initiated disconnect -> session recycle", flush=True)
+        # NOTE: the old scope-freeze watchdog (frame-progress timer -> 2 s openclose
+        # re-open -> 10 s session recycle) was RETIRED 2026-07-10 once the SDR9700
+        # transport port (PR #19) fixed the underlying deaf-scope stall. The 9700's
+        # LAN scope no longer freezes every ~101 s, so there is nothing to re-open or
+        # recycle for. The transport's own UdpCivData watchdog (a faithful port of
+        # SDR9700's: 2 s no-data -> re-send openclose every 100 ms, in-session, no
+        # churn) handles any genuine transient stall. We keep ONLY the real
+        # radio-initiated-disconnect recovery below.
+        #
+        # RADIO KICKED US: the handler detects a radio-initiated disconnect
+        # (status disc=1). A dead session can't be revived in place -> recycle it
+        # (a fresh handler resets the flag).
+        if (self._handler is not None
+                and getattr(self._handler, "radio_disconnected", False)
+                and not getattr(self, "_want_reconnect", False)):
+            self._want_reconnect = True
+            print("[civ] radio-initiated disconnect -> session recycle", flush=True)
         raw = self._civ.smeter_raw
         if raw is None:
             return None
