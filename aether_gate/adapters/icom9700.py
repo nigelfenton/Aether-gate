@@ -153,8 +153,19 @@ class _Ic9700Stream(Ic9700Civ):
 
     def _dispatch(self, d):
         if d.find(b"\x27\x00\x00") >= 0:        # scope waveform frame
-            self._on_civ(d)                     # (no early return: a datagram can
-                                                # carry control replies alongside)
+            self._on_civ(d)                     # extract the waterfall pixels
+            # A scope frame is `FE FE E0 A2 27 00 00 <~500 raw amplitude bytes> FD`.
+            # It is its OWN CI-V message — freq/mode/S-meter replies (25/26/15) always
+            # arrive in SEPARATE datagrams, never mixed into a waveform frame. Do NOT
+            # fall through to the generic `fe fe ... fd` scan below: the raw amplitude
+            # bytes routinely contain stray `FD` terminators and `FE FE` sequences, so
+            # the scanner mis-frames the waveform and decodes 5 random amplitude bytes
+            # as a `25 00`/`00` BCD frequency — which is exactly what made the reported
+            # freq JUMP wildly around the 2m band (144.4 -> 144.6 -> 145.1 in ~1s) and
+            # AE could never land on the real receive frequency. (Regression from the
+            # SDR9700 transport port: the ported UdpCivData now hands the whole frame,
+            # scope bytes included, to on_data; before, control replies came pre-split.)
+            return
         # control CI-V: replies to us (fe fe E0 a2 ...) AND transceive
         # broadcasts (fe fe 00 a2 ...) the rig sends when its dial/mode is
         # changed at the front panel — that's how the radio drives AE.
