@@ -41,6 +41,9 @@ class Ic9700Audio(UdpBase):
         # Same pre-bound-socket adoption the CI-V stream uses (see Ic9700Civ):
         # the radio sends audio to the audio_local_port we advertised, so we must
         # keep listening on that exact socket, not bind a fresh one.
+        # Adopt the pre-bound reservation socket + init the ported UdpBase state
+        # WITHOUT re-binding (mirrors UdpCivData.__init__; the radio streams audio
+        # to the exact port we advertised, so keep this socket).
         self.local_ip = local_ip
         self.radio_ip = radio_ip
         self.radio_port = audio_port
@@ -48,30 +51,46 @@ class Ic9700Audio(UdpBase):
         self.sock = sock
         self.sock.settimeout(0.05)
         self.local_port = sock.getsockname()[1]
-        o = local_ip.split(".")
-        self.my_id = ((int(o[2]) << 24) | (int(o[3]) << 16) | (self.local_port & 0xFFFF))
-        self.remote_id = 0
-        self._send_seq = 1
-        self._ping_seq = 0
+        # UdpBase state (ported attribute names).
+        self._init_ids(local_ip)
+        self.send_seq = 1
+        self.send_seq_b = 0
+        self.auth_seq = 0x30
+        self.ping_send_seq = 0
+        self.is_authenticated = False
         self._lock = threading.Lock()
-        self._tx_hist = {}
-        self._rx_last = None
+        self._tx_seq_buf = {}
+        self._rx_seq_buf = {}
         self._rx_missing = {}
-        self._run = False
-        self._connected = False
+        self.packets_sent = 0
+        self.packets_lost = 0
+        self._mono_start = None
+        self._last_received_ms = 0
+        self._last_ping_sent_ms = 0
+        self._ping_have_sync = False
+        self._ping_radio_base = 0
+        self._ping_local_base = 0
+        self._ping_baseline_valid = False
+        self._ping_lateness_ms = 0
+        self._ping_baseline_ms = 0
         self._t_reader = None
         self._t_timers = None
+        self._run = False
+        self._retransmit_on = False
+        self._ping_on = False
+        self._idle_on = False
+        self._areyouthere_on = False
+        self._last_retransmit = 0.0
         self._last_ping = 0.0
-        self._last_ayt = 0.0
-        self._ayt_count = 0              # discovery retries (0x03) before i-am-here
-        self.n_lost = 0                  # radio asked us to retransmit (loss signal)
         self._last_idle = 0.0
-        self._last_retx = 0.0
+        self._last_areyouthere = 0.0
+        self.areyouthere_counter = 0
         self.n_sent = 0
         self.n_retx_req = 0
         self.n_rx_clears = 0
         self.n_rx_dgrams = 0
         self.last_rx_at = 0.0
+        self._connected = False
         self.on_data = self._on_audio
         # audio-specific
         self._ring = bytearray()       # decoded int16 PCM bytes waiting for get_audio
