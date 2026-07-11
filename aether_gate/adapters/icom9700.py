@@ -358,7 +358,7 @@ class Icom9700Adapter(RadioAdapter):
             raise RuntimeError(f"IC-9700 connect failed: {self._handler._fail!r} "
                                f"(authed={self._handler.authenticated.is_set()})")
         self._civ = _Ic9700Stream(lip, self.radio_ip, self._handler.civ_port,
-                                  self._handler._civ_sock, self.civ_addr)
+                                  self._handler._civ_sock, civ_addr=self.civ_addr)
         self._civ.start()
         # The CIV bring-up can race the stream handshake, and a glitched
         # session start can poison the tracked-seq layer: the radio then
