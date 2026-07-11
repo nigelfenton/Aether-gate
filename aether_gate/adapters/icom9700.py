@@ -365,8 +365,13 @@ class Icom9700Adapter(RadioAdapter):
         # menu offers exactly these three; older AE ignores the key and falls back
         # to the FLEX-6700's 2m.
         _bands = tuple(b.name for b in (_2M + _70CM + _23CM))   # ("2m","440","23cm")
+        # tx_capable=True now that real guarded PTT is wired (key_tx: armed +
+        # 2m/70cm only, 23cm refused, 10 s watchdog). This makes the engine
+        # advertise tx=1 on the active slice so AE un-greys the TX button; MOX
+        # then routes to key_tx(). TX is still PTT-only (no TX audio path yet) —
+        # keying gives a bare carrier until the TX-audio session is built.
         self.capabilities = AdapterCaps(model=model, serial=serial, station=station,
-                                        tx_capable=False,
+                                        tx_capable=True,
                                         min_span_hz=5_000.0, max_span_hz=1_000_000.0,
                                         bands=_bands)
         self._handler = None

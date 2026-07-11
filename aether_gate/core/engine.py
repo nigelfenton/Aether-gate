@@ -1427,6 +1427,11 @@ class Radio:
                 except Exception as e:                      # an adapter fault must not kill the control thread
                     log("[adapter] retune/set_mode error:", e)
 
+    def _tx_capable(self):
+        a = self.adapter
+        return bool(a is not None and getattr(a, "capabilities", None)
+                    and getattr(a.capabilities, "tx_capable", False))
+
     def emit_slice_status(self, conn, idx=None):
         if idx is None: idx = self.active_slice
         sl = self.slices.get(idx)
@@ -1435,10 +1440,20 @@ class Radio:
         # index_letter labels the flag AE draws (A/B/...) so two slices on one
         # pan are distinguishable (scout: SliceModel reads index_letter).
         letter = chr(ord('A') + (idx if idx < 26 else 0))
+        # TX-SLICE ADVERTISEMENT: AE greys the TX button ("no TX slice defined")
+        # until a slice reports tx=1 (FlexBackend carry(kvs,"tx",txSlice) ->
+        # RadioModel::activeTxSliceNum loops for isTxSlice()). On a TX-capable
+        # radio, mark the ACTIVE slice as the TX slice + advertise a TX antenna
+        # (AE also wants tx_ant/tx_ant_list). RX-only radios (sim/7300/dongle)
+        # send tx=0 so their TX button stays correctly greyed.
+        tx_fields = ""
+        if self._tx_capable():
+            is_tx = 1 if sl.get("active") else 0
+            tx_fields = f" tx={is_tx} tx_ant=ANT1 tx_ant_list=ANT1"
         self.status(conn, f"slice {idx} client_handle=0x{self.handle_hex} pan=0x{pid:08X} "
                           f"index_letter={letter} "
                           f"RF_frequency={sl['freq']:.6f} mode={sl['mode']} in_use=1 "
-                          f"active={1 if sl['active'] else 0}")
+                          f"active={1 if sl['active'] else 0}{tx_fields}")
 
     # SUB slice reserved index: primary receiver is slice 0, SUB is slice 1.
     SUB_SLICE = 1

@@ -99,9 +99,50 @@ def test_adapter_without_ptt_is_safe():
     print("ok  mox: adapter without PTT -> MOX tracked, no crash")
 
 
+class _Caps:
+    def __init__(self, tx): self.tx_capable = tx
+
+
+def _radio_for_slice(tx_capable):
+    from aether_gate.core.engine import Radio
+    r = Radio.__new__(Radio)
+    class _A: pass
+    a = _A(); a.capabilities = _Caps(tx_capable)
+    r.adapter = a
+    r.send_lock = threading.Lock()
+    r.handle_hex = "0000AAAA"
+    r.slices = {0: {"freq": 145.07, "mode": "FM", "active": True, "pan": 0x40000000}}
+    r.pans = {0x40000000: {"center": 145.07, "slice": 0, "wf_id": 0x42000000}}
+    r._primary_pan = lambda: 0x40000000
+    return r
+
+
+def test_tx_slice_advertised_when_tx_capable():
+    # AE greys the TX button until a slice reports tx=1. A TX-capable radio must
+    # mark its active slice tx=1 (+ a TX antenna) so AE un-greys it.
+    r = _radio_for_slice(True)
+    conn = _Conn()
+    r.emit_slice_status(conn, 0)
+    s = conn.out.decode()
+    assert "tx=1" in s, s
+    assert "tx_ant=" in s, s
+    print("ok  slice: TX-capable radio advertises tx=1 (+tx_ant) on active slice")
+
+
+def test_no_tx_slice_when_rx_only():
+    # An RX-only radio must NOT claim a TX slice (button stays correctly greyed).
+    r = _radio_for_slice(False)
+    conn = _Conn()
+    r.emit_slice_status(conn, 0)
+    s = conn.out.decode()
+    assert "tx=1" not in s, s
+    print("ok  slice: RX-only radio sends no tx=1 (TX button stays greyed)")
+
+
 def main():
     tests = [test_mox_on_keys_when_armed, test_mox_off_unkeys,
-             test_mox_refused_when_disarmed, test_adapter_without_ptt_is_safe]
+             test_mox_refused_when_disarmed, test_adapter_without_ptt_is_safe,
+             test_tx_slice_advertised_when_tx_capable, test_no_tx_slice_when_rx_only]
     for t in tests:
         try:
             t()
