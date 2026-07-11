@@ -330,6 +330,14 @@ class _Ic9700Stream(Ic9700Civ):
     def poll_smeter(self):
         self._send_civ(bytes([0x15, 0x02]))
 
+    # --- PTT (CI-V 1C 00) — the raw key primitives. The SAFETY layer lives on
+    # the adapter (Icom9700Adapter.key_tx/unkey_tx): arm-gate, band-check,
+    # 10 s watchdog. These two just put the CI-V on the wire; never call them
+    # directly from outside the adapter's guarded path.
+    def _ptt_raw(self, on):
+        """CI-V 1C 00 <01|00>: key (on=True) / unkey the transmitter."""
+        self._send_civ(bytes([0x1C, 0x00, 0x01 if on else 0x00]))
+
 
 class Icom9700Adapter(RadioAdapter):
     """IC-9700 LAN adapter. RX panadapter (scope) + freq/mode control."""
@@ -372,6 +380,13 @@ class Icom9700Adapter(RadioAdapter):
         self.usb_civ_port = usb_civ_port
         self.usb_civ_baud = usb_civ_baud
         self._usb = None
+        # --- TX / PTT safety state (see key_tx). DISARMED by default: nothing
+        # can key the rig until arm_tx() is called explicitly. This is the FIRST
+        # place the gate keys real RF, so it starts locked down. ---
+        self._tx_armed = False            # must arm_tx() before any key-down
+        self._tx_keyed = False            # are we currently keyed?
+        self._tx_watchdog = None          # threading.Timer that force-unkeys
+        self._tx_lock = threading.Lock()
         self._span_half_hz = 500_000      # what the scope is set to (± half-width)
         self._span_sent_at = 0.0
         self._smeter_sent_at = 0.0        # rate-limit the 15 02 poll (10 Hz like SDR9700)
@@ -479,6 +494,14 @@ class Icom9700Adapter(RadioAdapter):
         # that doesn't stress the scope stream.
 
     def _close_lan(self):
+        # SAFETY FIRST: never tear down a session with the rig still keyed. Unkey
+        # + re-latch the arm before we drop the CI-V transport (after which we
+        # could no longer send 1C 00 00). A disconnect/reconnect must always
+        # leave the transmitter in RX.
+        try:
+            self.disarm_tx()
+        except Exception:
+            pass
         # Stop ALL the LAN halves (scope + audio + handler). stop() sends the 0x05
         # disconnect the radio needs to release its RS-BA1 session. Leaves the
         # USB CI-V channel untouched (used by reconnect()). Closing the audio
@@ -565,6 +588,12 @@ class Icom9700Adapter(RadioAdapter):
     # sync snap AE back to where the rig actually is.
     BAND_RANGES_MHZ = ((144.0, 148.0), (420.0, 450.0), (1240.0, 1300.0))
 
+    # TX-ALLOWED bands (key_tx checks THIS, not BAND_RANGES_MHZ). DELIBERATELY
+    # EXCLUDES 23cm/1.2 GHz per Nigel's instruction — RX on 1.2 GHz is fine, but
+    # the gate must REFUSE to key the transmitter there. A hard guard, not a
+    # remembered rule. 2m + 70cm only.
+    TX_BANDS_MHZ = ((144.0, 148.0), (420.0, 450.0))
+
     # --- control (AE -> radio) -----------------------------------------
     def retune(self, center_hz):
         # MAIN tune. Over USB (single source of truth) write 25 00 with NO swap
@@ -600,6 +629,88 @@ class Icom9700Adapter(RadioAdapter):
             self._usb.set_main_mode(mb)
         elif self._civ:
             self._civ.set_mode_civ(mb)
+
+    # ==================================================================== #
+    #  TX / PTT — GUARDED. This is the first place the gate keys real RF.    #
+    #  Layered safety (ALL enforced here, none optional):                   #
+    #    1. DISARMED by default — key_tx() refuses unless arm_tx() was       #
+    #       called. AE is NOT wired to this (tx_capable stays False), so     #
+    #       nothing keys the rig unless you invoke key_tx() yourself.        #
+    #    2. BAND CHECK — refuse to key unless the rig's freq is in a legal   #
+    #       9700 segment (2m/70cm/23cm).                                     #
+    #    3. WATCHDOG — a Timer force-unkeys after TX_MAX_KEY_S even if        #
+    #       nothing else releases (stuck-PTT / hung-stream protection).      #
+    #    4. Auto-unkey + disarm on close/disconnect (see close/_close_lan).  #
+    # ==================================================================== #
+    TX_MAX_KEY_S = 10.0                    # watchdog: hard cap on continuous TX
+
+    def arm_tx(self):
+        """Explicitly enable TX. Until this is called, key_tx() is a no-op that
+        refuses. Arming does NOT key the rig — it only lifts the safety latch."""
+        self._tx_armed = True
+        print("[tx] ARMED (key_tx now permitted; watchdog "
+              f"{self.TX_MAX_KEY_S:.0f}s)", flush=True)
+
+    def disarm_tx(self):
+        """Force RX + re-latch the safety. Safe to call anytime."""
+        self.unkey_tx()
+        self._tx_armed = False
+        print("[tx] DISARMED", flush=True)
+
+    def tx_ready(self):
+        """(armed, in_band, freq_mhz) — why key_tx would/wouldn't fire, for UI."""
+        f = self._civ.freq_hz if self._civ else None
+        mhz = (f / 1e6) if f else None
+        in_band = bool(mhz and any(lo <= mhz <= hi for lo, hi in self.TX_BANDS_MHZ))
+        return {"armed": self._tx_armed, "in_band": in_band, "freq_mhz": mhz,
+                "keyed": self._tx_keyed}
+
+    def key_tx(self):
+        """Key the transmitter — ONLY if armed AND in a legal band. Arms a
+        watchdog that force-unkeys after TX_MAX_KEY_S. Returns True if keyed."""
+        with self._tx_lock:
+            if not self._tx_armed:
+                print("[tx] REFUSED: not armed (call arm_tx first)", flush=True)
+                return False
+            if self._civ is None:
+                print("[tx] REFUSED: no CI-V session", flush=True)
+                return False
+            f = self._civ.freq_hz
+            mhz = (f / 1e6) if f else None
+            if not (mhz and any(lo <= mhz <= hi for lo, hi in self.TX_BANDS_MHZ)):
+                print(f"[tx] REFUSED: {mhz} MHz not a TX-allowed band "
+                      f"{self.TX_BANDS_MHZ} (23cm/1.2GHz TX is disabled)", flush=True)
+                return False
+            if self._tx_keyed:
+                return True                            # already keyed
+            self._civ._ptt_raw(True)
+            self._tx_keyed = True
+            # WATCHDOG: force-unkey after the hard cap no matter what.
+            self._tx_watchdog = threading.Timer(self.TX_MAX_KEY_S, self._tx_timeout)
+            self._tx_watchdog.daemon = True
+            self._tx_watchdog.start()
+            print(f"[tx] KEYED @ {mhz:.5f} MHz (watchdog {self.TX_MAX_KEY_S:.0f}s)",
+                  flush=True)
+            return True
+
+    def unkey_tx(self):
+        """Unkey the transmitter (CI-V 1C 00 00). Always safe; cancels watchdog."""
+        with self._tx_lock:
+            if self._tx_watchdog is not None:
+                self._tx_watchdog.cancel()
+                self._tx_watchdog = None
+            if self._civ is not None:
+                try:
+                    self._civ._ptt_raw(False)
+                except Exception as e:
+                    print(f"[tx] unkey send error: {e}", flush=True)
+            if self._tx_keyed:
+                print("[tx] UNKEYED", flush=True)
+            self._tx_keyed = False
+
+    def _tx_timeout(self):
+        print(f"[tx] WATCHDOG fired ({self.TX_MAX_KEY_S:.0f}s) -> forcing RX", flush=True)
+        self.unkey_tx()
 
     def set_span(self, span_hz):
         """Follow AE's pan zoom: full width -> nearest Icom ± half-width setting."""
