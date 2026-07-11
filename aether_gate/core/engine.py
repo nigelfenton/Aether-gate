@@ -1090,6 +1090,14 @@ class Radio:
         elif c == "sub radio all":
             self.reply(conn, seq)
             self.emit_radio_status(conn)                   # slice/pan capability -> AE enables +RX
+            # Proactively announce the TX interlock as READY so AE knows it CAN
+            # transmit. Without this AE never sees the interlock leave its default
+            # (not-ready) state, so it refuses to even SEND 'transmit set mox=1'
+            # (MOX press produced NO command on the wire) — the chicken-and-egg
+            # that left MOX dead even with the slice's TX button lit. Only for a
+            # TX-capable radio; RX-only stays silent so its MOX stays inert.
+            if self._tx_capable():
+                self.emit_transmit_status()
         elif c.startswith("info"):
             self.reply(conn, seq, f"model={self.model},chassis_serial={self.serial},callsign=SDRSIM,"
                                   f"name={self.station},software_ver={VERSION},ip={self.ip}")
@@ -1156,7 +1164,24 @@ class Radio:
                         self.audio_stream_id = None
                         self.dax_channel = None
             self.reply(conn, seq)
-        elif c.startswith("transmit set"):                 # AE keys TX (MOX / TUNE)
+        elif c.startswith("xmit"):                          # AE KEYS TX HERE.
+            # THIS is the real key command. AE sends `xmit 1`/`xmit 0` for every
+            # key/unkey (MOX, PTT, CW, digital) — FlexBackend.cpp:182
+            # send("xmit %1"). We had wired only `transmit set mox`, which AE uses
+            # for STATE, not keying — so MOX produced `xmit 1` on the wire and the
+            # gate ignored it (rig never keyed). Route xmit -> guarded key_tx().
+            parts = c.split()
+            key = len(parts) >= 2 and parts[1] == "1"
+            self.tx_mox = key                              # keep status in sync
+            if self.adapter is not None and hasattr(self.adapter, "key_tx"):
+                try:
+                    if key: self.adapter.key_tx()
+                    else:   self.adapter.unkey_tx()
+                except Exception as e:
+                    log("[adapter] xmit->PTT error:", e)
+            self.reply(conn, seq)
+            self.emit_transmit_status()
+        elif c.startswith("transmit set"):                 # AE TX state (MOX/TUNE flags)
             kvs = parse_kvs(c)
             if "mox" in kvs:  self.tx_mox = kvs["mox"] == "1"
             if "tune" in kvs: self.tx_tune = kvs["tune"] == "1"

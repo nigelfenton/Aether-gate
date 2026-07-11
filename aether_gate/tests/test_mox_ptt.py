@@ -59,6 +59,39 @@ def _tx(r, conn, mox, seq="1"):
     r.on_line(conn, f"C{seq}|transmit set mox={mox}")
 
 
+def _xmit(r, conn, n, seq="1"):
+    r.on_line(conn, f"C{seq}|xmit {n}")
+
+
+def test_xmit_1_keys_the_rig():
+    # THE REAL KEY PATH: AE sends 'xmit 1' to key (FlexBackend send("xmit %1")).
+    a = _TxAdapter(); a.arm_tx()
+    r = _radio(a)
+    _xmit(r, _Conn(), "1")
+    assert a.keyed is True, a.calls
+    assert r.tx_mox is True
+    print("ok  xmit: 'xmit 1' keys the rig (armed)")
+
+
+def test_xmit_0_unkeys():
+    a = _TxAdapter(); a.arm_tx()
+    r = _radio(a)
+    _xmit(r, _Conn(), "1")
+    _xmit(r, _Conn(), "0", seq="2")
+    assert a.keyed is False, a.calls
+    assert a.calls[-1] == "unkey"
+    assert r.tx_mox is False
+    print("ok  xmit: 'xmit 0' unkeys the rig")
+
+
+def test_xmit_refused_when_disarmed():
+    a = _TxAdapter()                            # not armed
+    r = _radio(a)
+    _xmit(r, _Conn(), "1")
+    assert a.keyed is False                     # key_tx refused
+    print("ok  xmit: disarmed -> 'xmit 1' attempted but refused")
+
+
 def test_mox_on_keys_when_armed():
     a = _TxAdapter(); a.arm_tx()                # armed (as auto-arm-on-connect would)
     r = _radio(a)
@@ -140,7 +173,9 @@ def test_no_tx_slice_when_rx_only():
 
 
 def main():
-    tests = [test_mox_on_keys_when_armed, test_mox_off_unkeys,
+    tests = [test_xmit_1_keys_the_rig, test_xmit_0_unkeys,
+             test_xmit_refused_when_disarmed,
+             test_mox_on_keys_when_armed, test_mox_off_unkeys,
              test_mox_refused_when_disarmed, test_adapter_without_ptt_is_safe,
              test_tx_slice_advertised_when_tx_capable, test_no_tx_slice_when_rx_only]
     for t in tests:
