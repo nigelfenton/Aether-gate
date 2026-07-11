@@ -280,6 +280,16 @@ class _Ic9700Stream(Ic9700Civ):
 
     def set_mode_civ(self, mode_byte, filt=0x01):
         self._send_civ(bytes([0x06, mode_byte, filt]))
+        # Optimistically reflect the new mode straight away (mirrors the freq
+        # tuner's `self.freq_hz = tgt`). Without this, receivers()/radio_mode()
+        # keep returning the OLD self.mode until the next 26 00 poll lands, so
+        # the engine re-emits the stale mode to AE and AE's display snaps back
+        # to it — the "software mode change reverts, front-panel change sticks"
+        # bug (front-panel changes arrive as a 01/26 transceive that _dispatch
+        # updates self.mode from, which is why those never snapped back).
+        m = CIV_TO_MODE.get(mode_byte)
+        if m and not self._reading_rx2:
+            self.mode = m
 
     def poll_smeter(self):
         self._send_civ(bytes([0x15, 0x02]))
