@@ -917,10 +917,23 @@ class Radio:
             conn, addr = srv.accept()
             log(f"[tcp] AE connected from {addr}")
             self.ae_peer_ip = addr[0]; self.vita_dest = None
+            # AUTO-ARM TX on connect (per Nigel: arm defaults on). key_tx() still
+            # enforces the TX-band whitelist (2m/70cm; 23cm refused) + the 10 s
+            # watchdog, so "armed" only lifts the latch — it does NOT key anything
+            # until AE's MOX arrives. Adapters without arm_tx (sim/7300) no-op.
+            if self.adapter is not None and hasattr(self.adapter, "arm_tx"):
+                try: self.adapter.arm_tx()
+                except Exception as e: log("[adapter] auto-arm error:", e)
             try: self.handle(conn)
             except Exception as e: log("[tcp] conn error:", e)
             finally:
                 conn.close()
+                # SAFETY: AE dropped — force RX + disarm so a lost client can
+                # never leave the transmitter keyed/armed. (disarm_tx unkeys too.)
+                if self.adapter is not None and hasattr(self.adapter, "disarm_tx"):
+                    try: self.adapter.disarm_tx()
+                    except Exception as e: log("[adapter] disarm-on-disconnect error:", e)
+                self.tx_mox = False; self.tx_tune = False
                 self.streaming = False; self.ae_peer_ip = None; self.conn = None; self.vita_dest = None
                 self.audio_stop.set(); self.audio_stream_id = None; self.dax_channel = None
                 # Free this client's receivers/panadapters on disconnect, like a real radio.
@@ -1147,6 +1160,21 @@ class Radio:
             kvs = parse_kvs(c)
             if "mox" in kvs:  self.tx_mox = kvs["mox"] == "1"
             if "tune" in kvs: self.tx_tune = kvs["tune"] == "1"
+            # WIRE AE's MOX -> real guarded PTT. Before this, tx_mox was only
+            # tracked + echoed to AE (AE showed TX but the rig never keyed — only
+            # the hand mic could TX). Now MOX keys the actual radio through the
+            # adapter's SAFE path: key_tx() still enforces armed + TX-band
+            # (2m/70cm; 23cm refused) + the 10 s watchdog. If refused (wrong band
+            # / disarmed), AE shows MOX but the rig safely stays RX.
+            want_tx = self.tx_mox or self.tx_tune
+            if self.adapter is not None and hasattr(self.adapter, "key_tx"):
+                try:
+                    if want_tx:
+                        self.adapter.key_tx()
+                    else:
+                        self.adapter.unkey_tx()
+                except Exception as e:
+                    log("[adapter] MOX->PTT error:", e)
             self.reply(conn, seq)
             self.emit_transmit_status()
         elif c.startswith("radio set"):
