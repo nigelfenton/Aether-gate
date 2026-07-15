@@ -54,7 +54,7 @@ Patterns (each is a test signal; the control panel explains what to look for):
   tx_blank      periodic real TX gap -> repro #2126 / #1916
 Also handles AE's own CWX keyer (cwx send/wpm/qsk_enabled) for authentic CW TX.
 """
-import argparse, http.server, json, math, os, glob, random, socket, struct, subprocess, sys, threading, time, urllib.parse, uuid, wave
+import argparse, http.server, json, math, os, glob, random, select, socket, struct, subprocess, sys, threading, time, urllib.parse, uuid, wave
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURES_DIR = os.path.join(HERE, "fixtures")
@@ -1026,6 +1026,7 @@ class Radio:
         while self.run:
             conn, addr = srv.accept()
             log(f"[tcp] AE connected from {addr}")
+            self.conn = conn
             self.ae_peer_ip = addr[0]; self.vita_dest = None
             # AUTO-ARM TX on connect (per Nigel: arm defaults on). key_tx() still
             # enforces the TX-band whitelist (2m/70cm; 23cm refused) + the 10 s
@@ -1034,7 +1035,7 @@ class Radio:
             if self.adapter is not None and hasattr(self.adapter, "arm_tx"):
                 try: self.adapter.arm_tx()
                 except Exception as e: log("[adapter] auto-arm error:", e)
-            try: self.handle(conn)
+            try: self.handle(conn, srv)
             except Exception as e: log("[tcp] conn error:", e)
             finally:
                 conn.close()
@@ -1054,14 +1055,29 @@ class Radio:
                 self.slices.clear(); self.pans.clear(); self.pan_seq = 0; self.active_slice = 0
                 self._radio_state_claimed = False   # next connect re-seeds from the radio
 
-    def handle(self, conn):
+    def handle(self, conn, srv=None):
         self.conn = conn
         with self.send_lock:
             conn.sendall(f"V{VERSION}\n".encode())
             conn.sendall(f"H{self.handle_hex}\n".encode())
         log(f"[tcp] sent V{VERSION} / H{self.handle_hex}")
         buf = b""
+        # A real radio serves ONE GUI client. This loop runs the whole session,
+        # so a second connection would otherwise sit unread in the listen()
+        # backlog and AE would hang forever waiting for V/H ("shows in discovery
+        # but connect hangs" when another box holds the radio). By select()ing on
+        # the listen socket alongside the client, a second connect is reaped and
+        # refused (accept-then-close) WITHOUT leaving this session — turning the
+        # silent hang into an instant clean disconnect AE already handles. When
+        # srv is None (direct callers/tests), fall back to plain blocking recv.
+        watch = [conn] + ([srv] if srv is not None else [])
         while self.run:
+            if srv is not None:
+                ready, _, _ = select.select(watch, [], [], 1.0)
+                if srv in ready:
+                    self._refuse_busy(srv)
+                if conn not in ready:
+                    continue                    # timeout or only srv fired
             chunk = conn.recv(4096)
             if not chunk: break
             buf += chunk
@@ -1069,6 +1085,18 @@ class Radio:
                 line, buf = buf.split(b"\n", 1)
                 line = line.decode(errors="replace").strip()
                 if line: self.on_line(conn, line)
+
+    def _refuse_busy(self, srv):
+        """A second client is pending on the listen socket while we already serve
+        one. Accept it and close it at once so its connect fails fast instead of
+        hanging unread in the backlog."""
+        try:
+            other, oaddr = srv.accept()
+        except OSError:
+            return
+        log(f"[tcp] BUSY: refused {oaddr[0]} — radio held by {self.ae_peer_ip or '?'}")
+        try: other.close()
+        except OSError: pass
 
     def reply(self, conn, seq, body="", code=0):
         with self.send_lock:
