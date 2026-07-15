@@ -2803,6 +2803,36 @@ def start_control_server(radio, port):
                                                  "sub": s.get("sub", False)}
                                         for i, s in radio.slices.items()}}
                 return self._json(d)
+            # ---- CI-V SET-menu settings read (diagnostics + config) ----
+            # /settings          -> read every known menu item
+            # /settings?name=X   -> read one item
+            # /settings/set?name=X&value=N -> write one item (radios that support it)
+            if u.path == "/settings":
+                a = radio.adapter
+                if a is None or not hasattr(a, "read_all_settings"):
+                    return self._json({"error": "adapter has no CI-V settings facility"})
+                q = urllib.parse.parse_qs(u.query)
+                if "name" in q and hasattr(a, "read_setting"):
+                    name = q["name"][0]
+                    return self._json({name: a.read_setting(name)})
+                return self._json(a.read_all_settings())
+            if u.path == "/settings/set":
+                a = radio.adapter
+                if a is None or not hasattr(a, "write_setting"):
+                    return self._json({"error": "adapter has no CI-V settings facility"})
+                q = urllib.parse.parse_qs(u.query)
+                name = q.get("name", [None])[0]
+                val = q.get("value", [None])[0]
+                if name is None or val is None:
+                    return self._json({"error": "name and value required"})
+                try:
+                    val = int(val)
+                except (TypeError, ValueError):
+                    return self._json({"error": "value must be an integer"})
+                ok = a.write_setting(name, val)
+                # read back so the caller sees the applied value
+                rb = a.read_setting(name) if hasattr(a, "read_setting") else None
+                return self._json({"name": name, "wrote": val, "ok": ok, "readback": rb})
             if u.path == "/radio":
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html")

@@ -78,6 +78,40 @@ def _decode_bcd(b):
     return f
 
 
+def _bcd2(n):
+    """int 0..9999 -> 2 CI-V BCD bytes, MSB digit-pair first (menu-value order)."""
+    n = int(n)
+    d = [(n // 1000) % 10, (n // 100) % 10, (n // 10) % 10, n % 10]
+    return bytes([(d[0] << 4) | d[1], (d[2] << 4) | d[3]])
+
+
+def _unbcd(b):
+    """CI-V BCD value bytes (MSB pair first) -> int. Empty -> None."""
+    if not b:
+        return None
+    n = 0
+    for byte in b:
+        n = n * 100 + (byte >> 4) * 10 + (byte & 0x0F)
+    return n
+
+
+# IC-9700 SET-menu items reachable via CI-V 1A 05 <subaddr>. Addresses + value
+# semantics are from the official IC-9700 CI-V Reference Guide (cached on the NAS
+# at _claude/IC-9700_CI-V_Reference_Guide.pdf). Each entry:
+#   subaddr : 16-bit menu index
+#   width   : value byte-count (1 = single BCD byte; 2 = 0000..0255 level)
+#   kind    : "level" (0..255 = 0..100%) or "enum" (choice index)
+#   choices : for enum, index -> human label
+_MOD_SRC = {0: "MIC", 1: "ACC", 2: "MIC,ACC", 3: "USB", 4: "MIC,USB", 5: "LAN"}
+IC9700_SETTINGS = {
+    "data_mod":      {"subaddr": 0x0116, "width": 1, "kind": "enum",  "choices": _MOD_SRC},
+    "data_off_mod":  {"subaddr": 0x0115, "width": 1, "kind": "enum",  "choices": _MOD_SRC},
+    "lan_mod_level": {"subaddr": 0x0114, "width": 2, "kind": "level"},
+    "usb_mod_level": {"subaddr": 0x0113, "width": 2, "kind": "level"},
+    "acc_mod_level": {"subaddr": 0x0112, "width": 2, "kind": "level"},
+}
+
+
 def _resample(src, n):
     """Nearest-neighbour resample a dBm list to exactly n bins."""
     m = len(src)
@@ -126,6 +160,13 @@ class _Ic9700Stream(Ic9700Civ):
         self._tune_target = None       # latest AE-requested freq (tuner thread chases it)
         self._tune_evt = threading.Event()
         self._tuner = None
+        # --- generic CI-V menu (1A 05) read/write facility ---
+        # Sends 1A 05 <2-byte-subaddr> [value...] through the LIVE session (no
+        # competing login) and correlates the reply by sub-address. Used to read/
+        # write rig SET-menu items (e.g. LAN MOD Level) for diagnostics + config.
+        self._menu_replies = {}        # subaddr-int -> value bytes (last reply)
+        self._menu_evt = threading.Event()   # set when any 1A 05 reply lands
+        self._menu_lock = threading.Lock()   # serialise concurrent menu requests
 
     # SCOPE-ONLY MODE: in the hybrid, the USB channel is the SOLE CI-V master
     # for freq/mode (so the two masters don't corrupt each other's reads on the
@@ -228,6 +269,13 @@ class _Ic9700Stream(Ic9700Civ):
                     # power stays controlled at the rig's front panel).
                     self.rfpower_raw = (data[1] >> 4) * 1000 + (data[1] & 0xF) * 100 + \
                                        (data[2] >> 4) * 10 + (data[2] & 0xF)
+                elif cmd == 0x1A and len(data) >= 3 and data[0] == 0x05:
+                    # Menu (1A 05 <2-byte subaddr> <value...>) read reply. Store
+                    # the value bytes keyed by the 16-bit sub-address so a waiting
+                    # read_menu() can pick it up. A WRITE is acked with FB (no data).
+                    subaddr = (data[1] << 8) | data[2]
+                    self._menu_replies[subaddr] = bytes(data[3:])
+                    self._menu_evt.set()
                 elif cmd == 0xFB:
                     self.n_fb += 1
                 elif cmd == 0xFA:
@@ -238,6 +286,36 @@ class _Ic9700Stream(Ic9700Civ):
         """Selected-VFO tune (25 00). Returns False if the radio FA'd it."""
         fa0 = self.n_fa
         self._send_civ(bytes([0x25, 0x00]) + _encode_bcd(hz))
+        time.sleep(settle)
+        return self.n_fa == fa0
+
+    # --- generic CI-V SET-menu (1A 05) read/write ----------------------------
+    # Sends over the LIVE CI-V session (no competing login — this is what makes
+    # it work where a standalone probe failed). read returns the raw value bytes;
+    # write returns True on the radio's FB ack. subaddr is the 16-bit menu index
+    # (e.g. 0x0114 = LAN MOD Level) from the IC-9700 CI-V reference.
+    def read_menu(self, subaddr, timeout=1.5):
+        """Read a 1A 05 <subaddr> menu item. Returns value bytes, or None on
+        timeout / no session."""
+        with self._menu_lock:
+            self._menu_replies.pop(subaddr, None)
+            self._menu_evt.clear()
+            self._send_civ(bytes([0x1A, 0x05, (subaddr >> 8) & 0xFF, subaddr & 0xFF]))
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                if subaddr in self._menu_replies:
+                    return self._menu_replies[subaddr]
+                self._menu_evt.wait(0.1)
+                self._menu_evt.clear()
+            return None
+
+    def write_menu(self, subaddr, value_bytes, settle=0.25):
+        """Write a 1A 05 <subaddr> menu item. `value_bytes` is the raw value
+        payload (already BCD-encoded to the item's width). Returns True if the
+        radio did not FA (reject) it within settle."""
+        fa0 = self.n_fa
+        self._send_civ(bytes([0x1A, 0x05, (subaddr >> 8) & 0xFF, subaddr & 0xFF])
+                       + bytes(value_bytes))
         time.sleep(settle)
         return self.n_fa == fa0
 
@@ -665,6 +743,43 @@ class Icom9700Adapter(RadioAdapter):
             self._usb.set_main_mode(mb)
         elif self._civ:
             self._civ.set_mode_civ(mb)
+
+    # --- CI-V SET-menu settings (1A 05) read/write ---------------------------
+    # Named accessors over the live CI-V session for rig SET-menu items (see
+    # IC9700_SETTINGS). Purpose: diagnose TX-audio routing (e.g. is LAN MOD Level
+    # 0? that gives a keyed-but-unmodulated carrier) and, later, auto-configure
+    # the rig (e.g. force DATA MOD=LAN on connect). Reads/writes go through the
+    # running gate session — NOT a competing login.
+    def read_setting(self, name):
+        """Read a named SET-menu item. Returns a dict {raw, value, label} or
+        None (unknown name / no CI-V / timeout)."""
+        spec = IC9700_SETTINGS.get(name)
+        if spec is None or self._civ is None:
+            return None
+        raw = self._civ.read_menu(spec["subaddr"])
+        if raw is None:
+            return None
+        val = _unbcd(raw)
+        out = {"raw": raw.hex(), "value": val}
+        if spec["kind"] == "enum":
+            out["label"] = spec.get("choices", {}).get(val, f"?{val}")
+        else:                                   # level: 0..255 -> 0..100%
+            out["label"] = None if val is None else f"{round(val / 255 * 100)}%"
+        return out
+
+    def write_setting(self, name, value):
+        """Write a named SET-menu item. `value` is the numeric setting (enum
+        index, or 0..255 level). Returns True if the radio accepted it."""
+        spec = IC9700_SETTINGS.get(name)
+        if spec is None or self._civ is None:
+            return False
+        payload = _bcd2(value) if spec["width"] == 2 else bytes([int(value) & 0xFF])
+        return self._civ.write_menu(spec["subaddr"], payload)
+
+    def read_all_settings(self):
+        """Read every known SET-menu item -> {name: {...} | None}. For the
+        diagnostics dump (web panel / status)."""
+        return {name: self.read_setting(name) for name in IC9700_SETTINGS}
 
     # ==================================================================== #
     #  TX / PTT — GUARDED. This is the first place the gate keys real RF.    #
