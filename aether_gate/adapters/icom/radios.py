@@ -96,10 +96,12 @@ REGISTRY = {
         model="IC-905", civ_addr=0xAC, transport="lan", advertise="FLEX-6700",
         bands=_2M + _70CM + _23CM
               + [Band("13cm", 2300.0, 2450.0, needs_xvtr=True),
-                 Band("6cm", 5650.0, 5925.0, needs_xvtr=True),
+                 # 5.7 GHz: wire name "5cm" = AE BandDefs vocabulary (AE has no "6cm").
+                 # The band is variously called 6cm/5cm/5.6GHz; AE names it "5cm".
+                 Band("5cm", 5650.0, 5925.0, needs_xvtr=True),
                  Band("3cm", 10000.0, 10500.0, needs_xvtr=True)],
         has_scope=True, verified=False,
-        notes="VHF->microwave (2m/70cm/23cm/13cm/6cm/+10GHz w/ CX-10G). All but 2m via XVTR. VERIFY."),
+        notes="VHF->microwave (2m/70cm/5.7G/23cm/13cm/+10GHz w/ CX-10G). All but 2m via XVTR. VERIFY."),
 
     "IC-7300": IcomRadio(
         model="IC-7300", civ_addr=0x94, transport="usb", advertise="FLEX-6600",
