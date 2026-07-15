@@ -26,8 +26,11 @@ def _radio():
     # A sim adapter with no real hardware: retune()/set_slice() are no-ops, so an
     # accepted freq is safe and a rejected one simply never reaches the (absent) rig.
     r = Radio("127.0.0.1", None, adapter=SimAdapter(model="FLEX-6700"), port=5992)
-    # Seed a known-good active slice at 14.100 MHz so we can watch it hold/move.
-    r.slices[0] = {"freq": 14.100, "mode": "USB", "active": True, "pan": r._primary_pan()}
+    # Create a panadapter the way AE does (display panafall create -> _new_pan),
+    # THEN seed a known-good active slice on it. (_primary_pan() is a read-only
+    # accessor now — it no longer conjures a pan — so the pan must exist first.)
+    pid = r._new_pan()
+    r.slices[0] = {"freq": 14.100, "mode": "USB", "active": True, "pan": pid}
     r.active_slice = 0
     return r
 

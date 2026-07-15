@@ -1488,7 +1488,16 @@ class Radio:
         return pid
 
     def _primary_pan(self):
-        return next(iter(self.pans)) if self.pans else self._new_pan()
+        # READ-ONLY accessor: the current primary pan, or None if none exist yet.
+        # It must NOT create a pan — doing so meant a `display pan set default ...`
+        # that AE sends BEFORE `display panafall create` conjured a phantom pan
+        # (0x40000000), so AE's real create landed on a 2nd pan (0x40000001) and
+        # the client saw two panadapters — which it then reconciled down to one,
+        # destabilising the FIRST connect (blank radio-name box + 2->1 slice) and
+        # forcing a reconnect. Panadapters are created ONLY by the explicit
+        # `display pan[afall] create` handler. Callers that need a pan id already
+        # tolerate None (self.pans.get(None) -> None, then guarded).
+        return next(iter(self.pans)) if self.pans else None
 
     def _pan_center(self, pid):                            # a pan's own framing centre (NOT the slice freq:
         pan = self.pans.get(pid)                           # a slice can tune within a fixed pan, autopan=0)
@@ -1545,6 +1554,8 @@ class Radio:
     def _handle_pan_zoom(self, pid, kvs):
         if pid is None:
             pid = self._primary_pan()
+        if pid is None:
+            return False                                   # no pan yet -> nothing to zoom
         mode = None
         state = None
         if "band_zoom" in kvs:
@@ -1622,6 +1633,7 @@ class Radio:
         sl = self.slices.get(idx)
         if not sl: return
         pid = sl.get("pan") or self._primary_pan()
+        if pid is None: return                             # no pan yet -> nothing to anchor the slice status to
         # index_letter labels the flag AE draws (A/B/...) so two slices on one
         # pan are distinguishable (scout: SliceModel reads index_letter).
         letter = chr(ord('A') + (idx if idx < 26 else 0))
