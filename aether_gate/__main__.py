@@ -40,11 +40,13 @@ def build_adapter(name, args):
         # FLEX-6700 is the only Flex with 2m — don't let the shared FLEX-6600
         # default hide the 9700's home band in AE
         model = args.model if args.model != "FLEX-6600" else "FLEX-6700"
-        return cls(radio_ip=args.radio_ip, username=args.user, password=args.pw,
-                   local_ip=args.radio_local_ip, radio_port=args.radio_port,
-                   civ_addr=int(str(args.civ_addr), 16), model=model,
-                   serial=serial, station=station,
-                   usb_civ_port=args.usb_civ_port, usb_civ_baud=args.usb_civ_baud)
+        a = cls(radio_ip=args.radio_ip, username=args.user, password=args.pw,
+                local_ip=args.radio_local_ip, radio_port=args.radio_port,
+                civ_addr=int(str(args.civ_addr), 16), model=model,
+                serial=serial, station=station,
+                usb_civ_port=args.usb_civ_port, usb_civ_baud=args.usb_civ_baud)
+        a.lan_mod_min = args.lan_mod_min       # auto-fix LAN MOD Level on connect
+        return a
     if name == "icom7300":
         serial = args.serial if args.serial != "GATE0001" else "GATE7300"
         station = args.station if args.station != "aether-gate 1" else "Icom-IC-7300"
@@ -134,6 +136,7 @@ def main(argv=None):
     ap.add_argument("--civ-addr", default="A2", help="Icom adapter: radio CI-V address hex (default A2 for 9700; use 94 for 7300)")
     ap.add_argument("--usb-civ-port", default=None, help="Icom USB CI-V serial port (e.g. COM7 or /dev/ttyUSB0). Required for icom7300; optional RX2 helper for icom9700.")
     ap.add_argument("--usb-civ-baud", type=int, default=115200, help="Icom USB CI-V baud (default 115200)")
+    ap.add_argument("--lan-mod-min", type=int, default=128, help="icom9700 adapter: on connect, raise the rig's LAN MOD Level to at least this (0..255) so TX audio modulates (0 = bare carrier). Default 128 (=50%%). Set 0 to disable the auto-fix.")
     ap.add_argument("--usb-audio-device", default=None, help="icom7300 adapter: ALSA capture device for RX audio (default: auto USB Audio CODEC/plughw card)")
     # kenwood adapter options (hamlib control + IF-tap SDR spectrum; reuses --soapy-*/--gain/--samp-rate)
     ap.add_argument("--kw-model", default="TS-2000", help="kenwood adapter: Kenwood model (TS-2000/TS-590SG/TS-890S)")

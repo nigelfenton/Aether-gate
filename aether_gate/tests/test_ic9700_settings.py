@@ -103,9 +103,49 @@ def test_read_setting_decode():
     print("ok  settings: read_setting decodes level% + enum label")
 
 
+def test_auto_set_lan_mod_on_connect():
+    # _ensure_lan_mod_ready(): raise LAN MOD Level if below lan_mod_min, leave a
+    # deliberately-higher level alone, and skip entirely when disabled (min=0).
+    from aether_gate.adapters.icom9700 import Icom9700Adapter, _bcd2, _unbcd
+
+    class RecCiv:
+        """Fake CI-V: read_menu returns the stored value; write_menu records +
+        applies it, so a subsequent read reflects the write (readback works)."""
+        def __init__(self, level_bytes):
+            self.store = {0x0114: level_bytes}
+            self.writes = []
+        def read_menu(self, subaddr, timeout=1.5):
+            return self.store.get(subaddr)
+        def write_menu(self, subaddr, value_bytes, settle=0.25):
+            self.writes.append((subaddr, _unbcd(value_bytes)))
+            self.store[subaddr] = bytes(value_bytes)
+            return True
+
+    def mk(level, minv=128):
+        a = Icom9700Adapter.__new__(Icom9700Adapter)
+        a.lan_mod_min = minv
+        a._civ = RecCiv(_bcd2(level))
+        return a
+
+    # 1. level 0 -> writes lan_mod_min (128)
+    a = mk(0); a._ensure_lan_mod_ready()
+    assert a._civ.writes == [(0x0114, 128)], a._civ.writes
+    assert _unbcd(a._civ.store[0x0114]) == 128     # readback reflects the fix
+
+    # 2. level already 200 (>=min) -> NO write (respect a deliberate value)
+    a = mk(200); a._ensure_lan_mod_ready()
+    assert a._civ.writes == [], a._civ.writes
+
+    # 3. disabled (lan_mod_min=0) -> no read, no write
+    a = mk(0, minv=0); a._ensure_lan_mod_ready()
+    assert a._civ.writes == []
+    print("ok  settings: auto-set LAN MOD on connect (fix-if-low, leave-if-set, disable)")
+
+
 def main():
     tests = [test_bcd_roundtrip, test_settings_table,
-             test_dispatch_captures_1a05_reply, test_read_setting_decode]
+             test_dispatch_captures_1a05_reply, test_read_setting_decode,
+             test_auto_set_lan_mod_on_connect]
     for t in tests:
         try:
             t()

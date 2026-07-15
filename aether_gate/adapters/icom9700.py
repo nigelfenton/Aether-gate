@@ -481,6 +481,11 @@ class Icom9700Adapter(RadioAdapter):
         self._handler = None
         self._civ = None
         self._audio = None             # LAN RX-audio session (Ic9700Audio)
+        # On connect, if the rig's LAN MOD Level is below this (0..255), raise it
+        # to it so TX audio actually modulates (0 = bare carrier). A user who has
+        # deliberately set a higher level is left alone. 128 = 50%, matching the
+        # USB/ACC defaults. Set to 0 to disable the auto-fix entirely.
+        self.lan_mod_min = 128
         # HYBRID RX2: optional USB CI-V channel. RX2 needs the 07 B0 swap, which
         # is destructive over LAN (yanks the scope) but HARMLESS over USB (no
         # scope stream) — proven 5/5 on HW 2026-07-03. When a USB CI-V port is
@@ -556,6 +561,16 @@ class Icom9700Adapter(RadioAdapter):
                                "wait ~40s and retry")
         print(f"[civ] stream healthy (freq={self._civ.freq_hz/1e6:.4f} MHz, "
               f"{self._civ.frames} scope frames)", flush=True)
+        # TX-AUDIO PRECONDITION: the gate modulates the rig over its LAN audio
+        # path, which only produces RF modulation if the rig's LAN MOD Level is
+        # non-zero (a factory-fresh / RS-BA1-defaulted 9700 leaves it at 0 -> the
+        # rig keys a BARE carrier, no modulation; cost a long debug session
+        # 2026-07-15). Ensure a usable level on connect so digital TX just works.
+        # Never let this optional convenience break an otherwise-good connect.
+        try:
+            self._ensure_lan_mod_ready()
+        except Exception as e:
+            print(f"[civ] LAN MOD auto-set skipped: {e}", flush=True)
         # LAN RX AUDIO: the handler negotiated a 48 kHz LPCM16 RX-audio stream in
         # conninfo (rxenable=1) and the radio assigned an audio port; bring up the
         # audio session (its own are-you-there handshake, like the CI-V stream) so
@@ -780,6 +795,32 @@ class Icom9700Adapter(RadioAdapter):
         """Read every known SET-menu item -> {name: {...} | None}. For the
         diagnostics dump (web panel / status)."""
         return {name: self.read_setting(name) for name in IC9700_SETTINGS}
+
+    def _ensure_lan_mod_ready(self):
+        """On connect, guarantee the rig can actually modulate over its LAN audio
+        path: raise LAN MOD Level to lan_mod_min if it's below that (0 = bare
+        carrier). Read-only + non-fatal — never blocks the connect. Leaves a
+        deliberately-higher level untouched; skips entirely if lan_mod_min == 0."""
+        if not self.lan_mod_min or self._civ is None:
+            return
+        if not hasattr(self._civ, "read_menu"):
+            return                              # CI-V transport predates the facility
+        cur = self.read_setting("lan_mod_level")
+        if cur is None:
+            print("[civ] LAN MOD Level: could not read (skipping auto-set)", flush=True)
+            return
+        level = cur.get("value")
+        if level is not None and level >= self.lan_mod_min:
+            print(f"[civ] LAN MOD Level OK ({cur['label']}) — TX audio can modulate",
+                  flush=True)
+            return
+        # Too low (typically 0 -> bare carrier). Raise it.
+        ok = self.write_setting("lan_mod_level", self.lan_mod_min)
+        rb = self.read_setting("lan_mod_level")
+        rb_label = rb["label"] if rb else "?"
+        print(f"[civ] LAN MOD Level was {cur['label']} -> set {self.lan_mod_min} "
+              f"(now {rb_label}); {'ok' if ok else 'WRITE REJECTED'}. "
+              f"Fixes the bare-carrier trap for digital TX.", flush=True)
 
     # ==================================================================== #
     #  TX / PTT — GUARDED. This is the first place the gate keys real RF.    #
