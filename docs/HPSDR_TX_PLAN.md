@@ -188,6 +188,10 @@ Port the 9700's four-layer model verbatim in shape:
   opt out of auto-arm for its first RF phases.
 - `TX_MAX_KEY_S = 10.0` watchdog Timer.
 - `TX_BANDS_MHZ` — **Nigel's licensed HF segments only**, and start with ONE band (20m).
+- ⛔ **NO-SPLIT GUARD (see the LPF section): refuse to key unless the TX frequency == RX1.** The
+  Radioberry's firmware picks the LPF from **RX1 only** (`currentfreq` is set solely on `C0=0x04`;
+  `0x02`/TX1 is never read), so a split TX would radiate through the wrong filter. Since Phase 1 is
+  single-slice anyway this costs nothing, and it converts a hardware hazard into a guard.
 - `tx_capable` **stays False** — AE must not be able to key it. Human calls `key_tx()`.
 - Auto-unkey + disarm in `close()` and on AE disconnect.
 - MOX held by the `_cc_loop` sender thread (it already owns EP2 egress at 20 Hz — but see §4:
@@ -312,10 +316,32 @@ Flagged honestly rather than assumed:
   **Consequences for this plan — Phase 2 gets EASIER, not harder:**
   - We do **not** need a `filter_board=` config or any I2C code. Sending nothing is the correct and
     safe behaviour: it selects the auto path.
-  - ⚠ **But `currentfreq` is the firmware's own idea of frequency.** It is declared in `filters.h`
-    and set elsewhere in the driver — **VERIFY it tracks the TX NCO on TX, not just RX1.** If it
-    only follows RX1, then transmitting on a different frequency than we're listening on would
-    select the WRONG filter. This is the remaining question, and it is narrow.
+  - ⛔ **`currentfreq` TRACKS RX1 ONLY — CONFIRMED FROM SOURCE 2026-07-16. The filter follows the
+    RECEIVE frequency, never the TX NCO.** `filters.h`:
+
+    ```c
+    static inline void handleFilters(char* buffer, int cw) {
+        if ((buffer[11]  & 0xFE) == 0x04) { currentfreq = determine_freq(11, buffer); }
+        if ((buffer[523] & 0xFE) == 0x04) { currentfreq = determine_freq(523, buffer); }
+    ```
+
+    `0x04` is `C0_RX1_FREQ`. **`0x02` (`C0_TX1_FREQ`) never appears as a register match anywhere in
+    the firmware** — the only `& 0xFE` comparisons are `0x00` (N2ADR), `0x04` (RX1) and `0x12`
+    (ALEX manual). Identical in the rpi-4 and rpi-5 trees, so it is not a variant quirk.
+
+    **Consequence: split-frequency TX selects the WRONG filter**, because the firmware only ever
+    saw RX1. Transmitting on a band away from where we are listening = wrong LPF = harmonics.
+
+    **Mitigations (decide in Phase 2):**
+    1. **Simplest and safest: refuse split TX entirely.** Our Phase-1 scope is one slice / one pan
+       anyway, so require TX freq == RX1 freq and make `key_tx` refuse otherwise. This turns a
+       hardware hazard into a guard we already know how to write (mirrors `ddc164b`).
+    2. Or drive the ALEX **manual** path ourselves (`C0=0x12` + the manual bit), taking full
+       responsibility for filter selection — more code, more ways to be wrong.
+    3. Or set RX1 to the TX frequency before keying so the firmware picks the right filter — a hack
+       that fights the firmware's model and breaks the panadapter.
+
+    Option 1 is recommended: it is honest about what we can guarantee, and it is free.
   - ⚠ `handleALEX` also has `currentMox`/`currentCW` state — T/R switching is firmware-side too.
 
   **⛔ HARD GATE STANDS anyway: first key into a DUMMY LOAD with a scope/analyser, and confirm
