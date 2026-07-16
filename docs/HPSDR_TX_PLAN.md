@@ -89,20 +89,54 @@ Something between 07-11 and 07-15 fixed it; the `maybeStartNextKissTx`-defers hy
 **Phase 0's exit criterion — "the gate decodes a sustained dax_tx frame rate while AE transmits" — is
 already met.** No work needed. The TX-audio *source* exists.
 
-### Phase 0b — the REAL blocker: the gate forwards SILENCE ⬅ START HERE
-The gate receives good audio (`peak=0.350`) but frequently sends **`peak=0`** onward to the radio:
-of 4 sampled `[txaudio-send]` frames, only one (`frame=6400`) had `peak=11452`; `6200`/`6600`/`6800`
-were all `peak=0`. This is the drain/key alignment race (the older "reaches radio as SILENCE (timing
-sync)" note) — **not** an AE supply problem.
+### Phase 0b — ROOT CAUSE FOUND (2026-07-16): AE keys WITHOUT creating the dax_tx stream
+**It is not a drain race, and `_tx_audio_loop` is not at fault.** The drain works correctly whenever
+audio actually arrives. Measured across Jul 15: **127 keys with `0 real audio`, 134 with ~30 real** —
+not per-process (every PID sees both), so it is per-key.
 
-Chase `_tx_audio_loop`: why does the drain emit silence-fill while `tx_pcm_ring` holds real audio?
-Suspects: drain starts before the ring fills (`drain START (tx_frames=0)`); silence lead/out padding
-overrunning the real payload; key ends before buffered audio lands.
+Diffing a failing cycle against a working one shows the whole story in the AE command stream:
 
-**Exit:** `[txaudio-send]` shows sustained nonzero `peak` for the duration of a keyed transmission.
+```
+WORKING 15:14:47          FAILING 15:59:19
+  C2063|stream create type=dax_tx     (absent!)
+  C2064|transmit set dax=1            C4361|transmit set dax=1
+  C2065|xmit 1                        C4362|xmit 1
+  -> [dax-tx] rx frames=1..101        -> no [dax-tx] rx AT ALL
+  -> drain END (30 real audio)        -> drain END (0 real audio, seen_real=False)
+```
 
-**This is 9700 work, and it is the honest prerequisite.** It is also RF-free to diagnose (read logs;
-the rig can stay on a dummy load or the key path can be exercised without an antenna).
+**In the failing cycles AE never sends `stream create type=dax_tx`, so `dax_tx_stream_id` is None,
+so the prime loop's guard (`engine.py:965`) drops every inbound VITA packet before
+`_decode_dax_tx` — there is no `[dax-tx] rx` at all.** AE keys and sets `dax=1` but never registers
+the stream. The gate then keys the rig and, correctly, has nothing to send.
+
+**It is PER-AE-CONNECTION, and it is NOT simply "the reconnect clears our id".** Timeline for one
+gate process (881710), which saw three AE connections:
+
+```
+15:58:31  AE connected  -> 15 keys, ALL 0 real     (dead session)
+16:27:26  AE connected  -> 25 keys, ALL 0 real     (dead session)
+16:37:43  AE connected  -> 5,2,1,2,2,1,8,2,1...    ALL 30-35 real  (working session)
+```
+
+So a *later* connection works fine — the gate is not permanently poisoned, and the
+`dax_tx_stream_id = None` on disconnect (`engine.py:1050`) is not by itself the bug. Whatever AE
+does differently on the working connection is the key. Note this process logged **zero**
+`stream create type=dax_tx` across its whole lifetime yet still had 80 `[dax-tx] rx` heartbeats and
+35 good drains — meaning **the id was learned some other way, or the stream survived a reconnect at
+AE's end**. That contradiction is unresolved and is the thread to pull.
+
+**Next step (unresolved — do NOT guess):** for the working 16:37:43 session vs the dead 16:27:26
+one, diff the FULL AE command stream from connect to first key (not just `stream create`) — what
+does AE send in one and not the other? Candidates: a `stream create` under a different spelling,
+`transmit set dax=`, a slice/mode precondition, or a client-handle/binding difference. Then decide
+whether the gate should (a) re-advertise/re-register the dax_tx stream itself on reconnect, or
+(b) this is an AE-side bug worth reporting.
+
+**Exit:** every keyed transmission is preceded by a live `dax_tx_stream_id`, and `drain END` reports
+nonzero `real audio`.
+
+**This is 9700 work, and it is the honest prerequisite.** It is RF-free to diagnose (log reading).
 **Until Phase 0b passes, do not start Phase 2.** A TX path that forwards silence is a carrier generator.
 
 ### Phase 1 — TX plumbing, INERT (no RF)
