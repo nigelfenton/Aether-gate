@@ -8,7 +8,7 @@ Every source (SDR hardware, legacy transceiver, remote WebSDR) is normalised to 
 Flex 6000 VITA-49 stream before AE sees it. The core speaks Flex; each radio is a
 RadioAdapter. See DESIGN.md.
 """
-__version__ = "0.2.0"   # Aether-gate's own version (distinct from the vendored flex-sim engine's FLEX_SIM_VERSION)
+__version__ = "0.3.0"   # Aether-gate's own version (distinct from the vendored flex-sim engine's FLEX_SIM_VERSION)
 
 from .core import Radio, Rack
 from .adapters import get_adapter, available, register, RadioAdapter
