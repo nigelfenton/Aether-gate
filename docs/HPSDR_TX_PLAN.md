@@ -149,9 +149,43 @@ No MOX, nothing keys. Pure offline work, unit-testable:
 
 **Exit:** `python -m pytest aether_gate/tests/test_hpsdr.py` green; no behaviour change on air.
 
+### ⛔ Why the bare-carrier guard is NOT in the HPSDR adapter today (2026-07-16)
+Asked to port the 9700's bare-carrier guard (`ddc164b`) here. **Deliberately not done — it would be
+actively harmful.** `HpsdrAdapter` has **no `key_tx`, no `arm_tx`, no TX surface at all**, and the
+engine keys purely on `hasattr`:
+
+```python
+# engine.py:1377 (xmit) and :1403 (MOX)
+if self.adapter is not None and hasattr(self.adapter, "key_tx"):
+    if key: self.adapter.key_tx()
+```
+
+So **defining `key_tx` on the HPSDR adapter is exactly what wires AE's MOX to the Radioberry.**
+Adding a "safety guard" today would *create* the keying path it purports to protect — the guard can
+only refuse *some* keys, whereas the current absence refuses *all* of them. Today `hasattr` is the
+strongest guard in the system, and it is free.
+
+**The guard belongs in Phase 2, added in the same commit as `key_tx` — never before it.** When it is
+written, note the HPSDR case is STRICTER than the 9700's:
+- The 9700 has a **mic**, so voice modes legitimately need no dax_tx and the guard skips them.
+- The Radioberry has **no mic and no modulator** — *every* mode's TX audio comes from AE. So there is
+  no voice exemption: **no dax_tx stream (or empty ring) == no TX, in every mode, no exceptions.**
+- And unlike the 9700 (whose radio makes the RF), a starved ring here doesn't just mean silence — it
+  means we are feeding the DAC nothing while MOX is asserted. Underrun policy is a TX-correctness
+  problem, not just an audio one (see Phase 3).
+
 ### Phase 2 — guarded PTT, DUMMY LOAD ONLY ⚠ FIRST RF
 Port the 9700's four-layer model verbatim in shape:
 - `_tx_armed=False` default, `arm_tx()`/`disarm_tx()`/`tx_ready()`/`key_tx()`/`unkey_tx()`.
+- **The bare-carrier guard, in the SAME commit as `key_tx` (see the section above).** Port
+  `set_tx_audio_ready_probe` + the `engine.tx_audio_ready()` probe from `ddc164b`, but with **no
+  voice exemption** — the Radioberry has no mic, so refuse in EVERY mode when no dax_tx stream is
+  registered. Keep the `force=True` escape for a deliberate tuning carrier, and keep the fail-safe
+  (missing/throwing probe -> assume ready) so an unwired engine can't wedge it.
+- ⚠ **Note the engine auto-arms on connect** (`engine.py:1060`: "AUTO-ARM TX on connect (per Nigel:
+  arm defaults on)"). So on HPSDR, `arm_tx()` existing means AE's MOX reaches the rig with only the
+  band-check + bare-carrier guard between it and RF. Decide deliberately whether HPSDR should
+  opt out of auto-arm for its first RF phases.
 - `TX_MAX_KEY_S = 10.0` watchdog Timer.
 - `TX_BANDS_MHZ` — **Nigel's licensed HF segments only**, and start with ONE band (20m).
 - `tx_capable` **stays False** — AE must not be able to key it. Human calls `key_tx()`.
