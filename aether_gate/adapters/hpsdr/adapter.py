@@ -31,6 +31,7 @@ from . import hpsdr_proto as hp
 # HPSDR-1 sample rates (the `speed` code -> Hz). Metis: 00=48k 01=96k 02=192k 03=384k.
 SPEED_HZ = {0: 48_000, 1: 96_000, 2: 192_000, 3: 384_000}
 HZ_SPEED = {v: k for k, v in SPEED_HZ.items()}
+AUDIO_RATE = 24_000          # AE remote_audio_rx rate (must match core AUDIO_RATE)
 
 
 class HpsdrAdapter(RadioAdapter):
@@ -65,6 +66,18 @@ class HpsdrAdapter(RadioAdapter):
         self._retune_to = None             # pending centre change (applied in the reader)
         self._gain_dirty = False           # AE moved the RF-gain slider (rebuild gain reg)
         self._board_id = None
+        # --- audio / SSB demod state (mirrors the soapy adapter) ---
+        import collections
+        self._slice_hz = center_hz         # demod target (the slice freq)
+        self._mode = "USB"
+        self._audio_q = collections.deque(maxlen=64)   # IQ blocks queued for the demodulator
+        self._nco_phase = 0.0              # persistent mixer phase (continuity across blocks)
+        self._decim = None                 # samp_rate / AUDIO_RATE (48k/24k = 2)
+        self._stage_firs = []              # [taps, overlap_state, M] per decimation stage
+        self._iq_resid = None              # leftover IQ between audio calls
+        self._audio_gain = 4.0             # post-demod gain (IQ already ~[-1,1] normalised)
+        self._agc_level = 0.05
+        self._agc_target = 0.25
 
     # --- lifecycle -------------------------------------------------------
     def _discover(self, sock):
@@ -124,6 +137,21 @@ class HpsdrAdapter(RadioAdapter):
                 hp.cc_rx1_freq(int(self.center_hz))]
         for k in range(6):
             self._send_cc(regs[k % 3], regs[(k + 1) % 3])
+
+        # --- demod setup: staged anti-alias + decimate samp_rate -> 24 kHz ---
+        # At 48 kHz this is just /2 (one cheap stage); wider rates factor into a
+        # few small stages so the taps only run at progressively lower rates.
+        self._decim = max(1, int(round(self.samp_rate / AUDIO_RATE)))    # 48k/24k = 2
+        stages = self._factor_decim(self._decim)
+        self._stage_firs = []
+        for M in stages:
+            ntaps = 4 * M + 1
+            cutoff = 0.45 / M
+            idx = np.arange(ntaps) - (ntaps - 1) / 2.0
+            h = np.sinc(2 * cutoff * idx) * np.hamming(ntaps)
+            h = (h / h.sum()).astype(np.float64)
+            self._stage_firs.append([h, np.zeros(ntaps - 1, dtype=np.complex128), M])
+        self._iq_resid = np.zeros(0, dtype=np.complex64)
 
         self._run = True
         self._reader = threading.Thread(target=self._read_loop, daemon=True,
@@ -197,7 +225,8 @@ class HpsdrAdapter(RadioAdapter):
                 # normalise 24-bit -> ~[-1,1] float32 complex for the core FFT
                 blk = np.array(buf[:BLOCK], dtype=np.complex64) / hp.FULL_SCALE
                 with self._lock:
-                    self._latest = blk
+                    self._latest = blk          # latest block -> panadapter FFT
+                self._audio_q.append(blk)       # every block -> demod (continuous)
                 buf = buf[BLOCK:]
 
     # --- control (AE -> radio) ------------------------------------------
@@ -232,6 +261,84 @@ class HpsdrAdapter(RadioAdapter):
             self._retune_to = float(center_hz)
         with self._lock:
             return self._latest            # core/fft.iq_to_dbm resamples to n bins
+
+    # --- the AUDIO source (SSB demod; numpy only) -----------------------
+    @staticmethod
+    def _factor_decim(D):
+        """Factor a decimation D into a few small stages (largest-first)."""
+        factors = []
+        for p in (5, 4, 3, 2):
+            while D % p == 0 and D // p >= 1:
+                factors.append(p); D //= p
+        if D > 1:
+            factors.append(D)
+        return factors or [1]
+
+    def set_slice(self, slice_hz):
+        """Set the demod target. On HPSDR the NCO retunes the hardware itself, so
+        the slice essentially IS the centre; if AE ever asks for a slice far off
+        the centre, retune the NCO onto it."""
+        self._slice_hz = float(slice_hz)
+        if abs(self._slice_hz - self.center_hz) > 0.40 * self.samp_rate:
+            self._retune_to = self._slice_hz
+
+    def set_mode(self, mode):
+        if mode:
+            self._mode = mode.upper()
+
+    def get_audio(self, n_samples, slice_hz=None, mode=None):
+        """Return n_samples of 24 kHz mono audio demodulated from the live IQ.
+        None until enough IQ is buffered. Mirrors the soapy SSB demod: mix the
+        slice to baseband, staged-decimate to 24 kHz, take the real part (USB) /
+        conj-real (LSB), then a light AGC."""
+        np = self._np
+        if np is None or not self._stage_firs:
+            return None
+        if slice_hz is not None:
+            self.set_slice(slice_hz)
+        if mode is not None:
+            self._mode = mode.upper()
+
+        need_in = n_samples * self._decim
+        while len(self._iq_resid) < need_in and self._audio_q:
+            self._iq_resid = np.concatenate([self._iq_resid, self._audio_q.popleft()])
+        if len(self._iq_resid) < need_in:
+            return None
+        iq = self._iq_resid[:need_in].astype(np.complex128)
+        self._iq_resid = self._iq_resid[need_in:]
+
+        # 1) mix slice -> baseband (near-zero on HPSDR: NCO already centred on it)
+        f_off = self._slice_hz - self.center_hz
+        k = np.arange(len(iq))
+        ph = self._nco_phase + 2.0 * np.pi * (-f_off) / self.samp_rate * k
+        iq = iq * np.exp(1j * ph)
+        self._nco_phase = (ph[-1] + 2.0 * np.pi * (-f_off) / self.samp_rate) % (2.0 * np.pi)
+
+        # 2) staged anti-alias + decimate to 24 kHz
+        sig = iq
+        for fir in self._stage_firs:
+            taps, state, M = fir
+            x = np.concatenate([state, sig])
+            y = np.convolve(x, taps, mode="valid")
+            fir[1] = sig[-(len(taps) - 1):]
+            sig = y[::M]
+        base = sig[:n_samples]
+        if len(base) < n_samples:
+            base = np.concatenate([base, np.zeros(n_samples - len(base), dtype=base.dtype)])
+
+        # 3) SSB demod
+        if self._mode.startswith("LSB"):
+            audio = np.real(np.conj(base))
+        else:                                # USB / DIGU / default
+            audio = np.real(base)
+
+        audio = audio * self._audio_gain
+        rms = float(np.sqrt(np.mean(audio * audio)) + 1e-9)
+        a = 0.3 if rms > self._agc_level else 0.02
+        self._agc_level = (1 - a) * self._agc_level + a * rms
+        audio = audio * (self._agc_target / max(self._agc_level, 1e-4))
+        np.clip(audio, -1.0, 1.0, out=audio)
+        return audio.tolist()
 
 
 def _local_ip():
