@@ -32,6 +32,12 @@ from . import hpsdr_proto as hp
 SPEED_HZ = {0: 48_000, 1: 96_000, 2: 192_000, 3: 384_000}
 HZ_SPEED = {v: k for k, v in SPEED_HZ.items()}
 AUDIO_RATE = 24_000          # AE remote_audio_rx rate (must match core AUDIO_RATE)
+CC_INTERVAL_S = 0.05         # EP2 C&C round-robin period (20 Hz) — see _cc_loop.
+                             # Decoupled from EP6 on purpose: the radio free-runs
+                             # the IQ stream, so sends must never pace reads.
+RCVBUF_BYTES = 1 << 20       # 1 MB EP6 socket buffer: absorb scheduling jitter so
+                             # a late drain loses nothing (default is far too small
+                             # for 48-384 kHz of 1032-byte packets)
 
 
 class HpsdrAdapter(RadioAdapter):
@@ -63,8 +69,10 @@ class HpsdrAdapter(RadioAdapter):
         self._lock = threading.Lock()
         self._latest = None                # most recent complex block for the panadapter FFT
         self._ep2_seq = 0
-        self._retune_to = None             # pending centre change (applied in the reader)
+        self._retune_to = None             # pending centre change (applied in _cc_loop)
         self._gain_dirty = False           # AE moved the RF-gain slider (rebuild gain reg)
+        self._sender = None                # EP2 C&C thread (decoupled from EP6)
+        self._resettle = False             # _cc_loop -> reader: retuned, drop partial IQ
         self._board_id = None
         # --- audio / SSB demod state (mirrors the soapy adapter) ---
         import collections
@@ -110,6 +118,12 @@ class HpsdrAdapter(RadioAdapter):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        # Big RX buffer BEFORE bind: EP6 free-runs, so anything we don't drain in
+        # time is dropped by the kernel, silently and unrecoverably.
+        try:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, RCVBUF_BYTES)
+        except OSError:
+            pass                            # best-effort; kernel may cap it
         s.bind((lip, hp.METIS_PORT))
 
         ip = self.radio_ip or self._discover(s)
@@ -157,9 +171,16 @@ class HpsdrAdapter(RadioAdapter):
         self._reader = threading.Thread(target=self._read_loop, daemon=True,
                                         name="hpsdr-rx")
         self._reader.start()
+        # EP2 egress runs on its OWN thread: the radio free-runs EP6, so the
+        # reader must never be paced by our sends (see _cc_loop).
+        self._sender = threading.Thread(target=self._cc_loop, daemon=True,
+                                        name="hpsdr-cc")
+        self._sender.start()
 
     def close(self):
         self._run = False
+        if self._sender:
+            self._sender.join(timeout=2)
         if self._reader:
             self._reader.join(timeout=2)
         if self._sock is not None:
@@ -181,34 +202,51 @@ class HpsdrAdapter(RadioAdapter):
             pass
         self._ep2_seq = (self._ep2_seq + 1) & 0xFFFFFFFF
 
-    # --- the persistent reader: ingest EP6 IQ + keep the C&C registers fresh --
-    def _read_loop(self):
-        np = self._np
+    # --- EP2 egress: keep the C&C registers latched, INDEPENDENT of EP6 ------
+    def _cc_loop(self):
+        """Round-robin the three C&C registers on our own clock.
+
+        This MUST NOT be driven by EP6 arrivals. HPSDR EP6 is a free-running
+        stream — the radio emits it at the sample rate whether or not we send
+        anything — so pacing sends 1:1 with reads (as the original loop did)
+        throttles the reader to the send rate, overflows the socket buffer, and
+        silently discards most of the stream. Measured on a Radioberry: a
+        coupled loop drained ~4.8 kHz of a nominal 48 kHz (~10x slow), which
+        time-compressed the IQ (WWV landed ~9x off frequency), broke FT8 decode,
+        and starved audio into ~0.5 s on/off bursts. 20 Hz is ample to hold the
+        registers latched; the reader is then free to drain at line rate.
+        """
         speed = HZ_SPEED[self.samp_rate]
-        # Round-robin the three config registers so config (Mercury/duplex), RX1
-        # freq and gain all stay applied. One register per EP2 frame; two per pkt.
-        # Three registers a working RX needs, refreshed by round-robin: config
-        # (Mercury+duplex), gain, RX1 freq. The freq entry [2] is rebuilt on retune.
+        # The three registers a working RX needs: config (Mercury+duplex), gain,
+        # RX1 freq. Entry [2] is rebuilt on retune, [1] when the gain slider moves.
         cc_cycle = [hp.cc_config(speed), hp.cc_rx_gain(self.gain_db),
                     hp.cc_rx1_freq(int(self.center_hz))]
         ci = 0
+        while self._run:
+            if self._retune_to is not None:
+                self.center_hz = float(self._retune_to)
+                self._retune_to = None
+                cc_cycle[2] = hp.cc_rx1_freq(int(self.center_hz))
+                # tell the reader to re-settle + drop the partial block
+                self._resettle = True
+            if self._gain_dirty:
+                self._gain_dirty = False
+                cc_cycle[1] = hp.cc_rx_gain(self.gain_db)   # AE slider -> LNA reg
+            self._send_cc(cc_cycle[ci % 3], cc_cycle[(ci + 1) % 3]); ci += 1
+            time.sleep(CC_INTERVAL_S)
+
+    # --- the persistent reader: drain EP6 IQ as fast as it arrives ----------
+    def _read_loop(self):
+        np = self._np
         buf = []                            # accumulate IQ into ~one FFT block
         BLOCK = 4096
         SETTLE_S = 0.4                      # discard early samples: let the NCO/AGC settle
         settle_from = time.monotonic()      # reset on each retune
         while self._run:
-            # apply a pending retune (rebuild the freq register + re-settle)
-            if self._retune_to is not None:
-                self.center_hz = float(self._retune_to)
-                self._retune_to = None
-                cc_cycle[2] = hp.cc_rx1_freq(int(self.center_hz))
+            # a retune happened (applied by _cc_loop) — drop partial IQ, re-settle
+            if self._resettle:
+                self._resettle = False
                 buf = []; settle_from = time.monotonic()
-            if self._gain_dirty:
-                self._gain_dirty = False
-                cc_cycle[1] = hp.cc_rx_gain(self.gain_db)   # AE slider -> LNA reg
-            # SEND EP2 then RECEIVE (the spike's ordering) — round-robin config/
-            # gain/freq so all three stay latched, paced 1:1 with the EP6 stream.
-            self._send_cc(cc_cycle[ci % 3], cc_cycle[(ci + 1) % 3]); ci += 1
             try:
                 d, _ = self._sock.recvfrom(2048)
             except socket.timeout:
