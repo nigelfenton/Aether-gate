@@ -2106,7 +2106,20 @@ class Radio:
         fseq = wseq = mseq = fi = 0
         last_tc = -1                                                # throttle pan/wf to one per row
         start = time.time()
+        # --- optional loop instrumentation (AETHER_GATE_PROFILE=1) ---------
+        # Times each phase of the loop and logs a summary every ~5 s. Off by
+        # default and ~free when off (one getenv at start, one perf_counter per
+        # phase when on). Added while chasing a ~0.5 s update rate that every
+        # individual component was too fast to explain — measure the loop, don't
+        # reason about it.
+        _prof = os.environ.get("AETHER_GATE_PROFILE") == "1"
+        _pstat = {k: [0.0, 0] for k in ("levels", "meters", "send", "sleep", "total",
+                                        "frames", "fresh")}
+        _plast = time.monotonic()
+        if _prof:
+            log("[prof] stream_loop instrumentation ON (AETHER_GATE_PROFILE=1)")
         while self.run and self.streaming:
+            _t_iter = time.perf_counter() if _prof else 0.0
             now = time.time()
             if self.paused:                                        # Stop: send nothing; AE's pan/wf go dead
                 time.sleep(0.1)                                    #       but the radio stays connected. Go resumes.
@@ -2128,7 +2141,26 @@ class Radio:
             if self.cwx_active:                                    # AE-initiated CWX overrides the pattern
                 levels, keyed = self._cwx_frame(ctx, now)
             elif self.adapter is not None:                         # Aether-gate: a radio adapter is the source
+                _t0 = time.perf_counter() if _prof else 0.0
                 levels = self._adapter_levels(ctx, now - start)
+                if _prof:
+                    _pstat["levels"][0] += time.perf_counter() - _t0; _pstat["levels"][1] += 1
+                    # Is the IQ actually NEW, or are we re-FFTing a stale block?
+                    # A loop at 20 Hz re-sending identical data looks exactly like
+                    # a slow update — the frame rate is fine, the CONTENT is not.
+                    _b = getattr(getattr(self.adapter, "_sdr", None), "_latest", None)
+                    if _b is None:
+                        _b = getattr(self.adapter, "_latest", None)
+                    _pstat["frames"][1] += 1
+                    # Compare CONTENT, not id(): CPython recycles the address of a
+                    # freed array, so a new block can reuse a discarded one's id()
+                    # and read as "stale". Sum the first few samples instead — cheap
+                    # and unique enough to tell one block of live IQ from another.
+                    if _b is not None and len(_b):
+                        _sig = float(abs(_b[0])) + float(abs(_b[len(_b)//2]))
+                        if _sig != _pstat["frames"][0]:
+                            _pstat["frames"][0] = _sig
+                            _pstat["fresh"][1] += 1
                 want_tx = self.adapter.wants_tx(ctx) if hasattr(self.adapter, "wants_tx") else None
                 if want_tx is not None and want_tx != self.tx_mox:
                     self.tx_mox = want_tx
@@ -2158,8 +2190,11 @@ class Radio:
                 # over the spectrum level at the pan centre (sim behaviour).
                 m = None
                 if self.adapter is not None:
+                    _t0 = time.perf_counter() if _prof else 0.0
                     try: m = self.adapter.read_meters()
                     except Exception: m = None
+                    if _prof:
+                        _pstat["meters"][0] += time.perf_counter() - _t0; _pstat["meters"][1] += 1
                 self.last_vfo_dbm = m.s_meter_dbm if m is not None \
                     else levels[ctx.center]                         # active slice (pan centre) -> rack strip
                 # Which pan owns the live scope? The 9700 streams ONLY the
@@ -2255,7 +2290,31 @@ class Radio:
             except OSError:
                 pass
             dt = period - (time.time() - now)
+            if _prof:
+                _pstat["sleep"][0] += max(0.0, dt); _pstat["sleep"][1] += 1
             if dt > 0: time.sleep(dt)
+            if _prof:
+                _pstat["total"][0] += time.perf_counter() - _t_iter; _pstat["total"][1] += 1
+                _tn = time.monotonic()
+                if _tn - _plast >= 5.0:
+                    n = _pstat["total"][1] or 1
+                    hz = n / (_tn - _plast)
+                    def _ms(k):
+                        s, c = _pstat[k]
+                        return f"{k}={s/c*1000:6.2f}ms/{c:<5d}" if c else f"{k}=  --      "
+                    # dt<0 means the loop is OVERRUNNING its period (can't keep up)
+                    # fresh/asked = how often the IQ block ACTUALLY changed. If this
+                    # is well under 1.0 the loop is re-FFTing stale data: the frame
+                    # rate is fine but the picture only moves when a new block lands.
+                    _fa, _ff = _pstat["frames"][1], _pstat["fresh"][1]
+                    _fr = (f"{_ff}/{_fa} fresh ({_ff/(_tn-_plast):5.1f} new/s)"
+                           if _fa else "-- fresh")
+                    log(f"[prof] loop {hz:6.2f} Hz (target {self.fps}) | "
+                        f"{_ms('levels')} {_ms('meters')} {_ms('send')} "
+                        f"| slept {_pstat['sleep'][0]/max(1,_pstat['sleep'][1])*1000:6.2f}ms avg "
+                        f"| iter {_pstat['total'][0]/n*1000:6.2f}ms avg | IQ {_fr}")
+                    _pstat = {k: [0.0, 0] for k in _pstat}
+                    _plast = _tn
         log("[stream] stopped")
 
 

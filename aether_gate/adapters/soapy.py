@@ -140,6 +140,14 @@ class SoapyAdapter(RadioAdapter):
         np = self._np
         CHUNK = 4096
         buf = np.empty(CHUNK, dtype=np.complex64)
+        # Optional read-loop instrumentation (AETHER_GATE_PROFILE=1): how often
+        # does readStream actually hand us a block? The panadapter can only be as
+        # fresh as this — a 20 fps engine loop re-FFTs stale IQ if this is slower.
+        import os as _os, time as _time
+        _prof = _os.environ.get("AETHER_GATE_PROFILE") == "1"
+        _n_data = _n_none = _n_err = 0
+        _t_read = 0.0
+        _plast = _time.monotonic()
         while self._run:
             # apply any pending retune on this thread (avoid racing readStream)
             if self._retune_to is not None:
@@ -149,8 +157,14 @@ class SoapyAdapter(RadioAdapter):
                 except Exception:
                     pass
                 self._retune_to = None
+            _t0 = _time.perf_counter() if _prof else 0.0
             sr = self._sdr.readStream(self._stream, [buf], CHUNK, timeoutUs=200000)
             n = sr.ret if hasattr(sr, "ret") else (sr[0] if isinstance(sr, tuple) else 0)
+            if _prof:
+                _t_read += _time.perf_counter() - _t0
+                if n > 0: _n_data += 1
+                elif n == 0: _n_none += 1
+                else: _n_err += 1
             if n > 0:
                 block = buf[:n].copy()
                 with self._lock:
@@ -158,6 +172,19 @@ class SoapyAdapter(RadioAdapter):
                 self._audio_q.append(block)     # for the demod (continuous — every block consumed)
             elif n < 0:
                 time.sleep(0.001)           # overflow/timeout — keep the stream alive, don't spin hot
+            if _prof:
+                _tn = _time.monotonic()
+                if _tn - _plast >= 5.0:
+                    _el = _tn - _plast
+                    _tot = _n_data + _n_none + _n_err
+                    print(f"[prof-read] {_n_data/_el:6.1f} blocks/s "
+                          f"(data={_n_data} ret0={_n_none} err={_n_err}) "
+                          f"| readStream {_t_read/max(1,_tot)*1000:6.2f} ms avg "
+                          f"| samples {_n_data*CHUNK/_el:9.0f}/s (rate {self.samp_rate:.0f})",
+                          flush=True)
+                    _n_data = _n_none = _n_err = 0
+                    _t_read = 0.0
+                    _plast = _tn
 
     @staticmethod
     def _factor_decim(D):
