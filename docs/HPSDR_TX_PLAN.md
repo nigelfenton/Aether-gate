@@ -174,8 +174,23 @@ written, note the HPSDR case is STRICTER than the 9700's:
   means we are feeding the DAC nothing while MOX is asserted. Underrun policy is a TX-correctness
   problem, not just an audio one (see Phase 3).
 
-### Phase 2 — guarded PTT, DUMMY LOAD ONLY ⚠ FIRST RF
+### Phase 1c — telemetry decoder (RX-only, NO RF) ⬅ DO THIS WHILE THE HL2 SHIPS
+Decode the EP6 C&C response bytes we already receive: temperature, fwd, rev, current
+(HL2 response regs `0x01`/`0x02`; the Radioberry mirrors the same layout). Verified today that our
+`parse_ep6`/`iq_samples` ignore these bytes entirely — the transport works and the slots alternate
+correctly, the Radioberry just reports zeros because it has no MAX11613.
+
+Build it now against the Radioberry (proves the parse path, RX-only, zero RF risk), surface it to AE
+as an SWR/power meter, and it lights up the moment the HL2 is plugged in. **This is the prerequisite
+for every TX guard that follows** — a guard cannot act on a number we do not decode.
+
+### Phase 2 — guarded PTT, DUMMY LOAD ONLY ⚠ FIRST RF — **ON THE HL2, NOT THE RADIOBERRY**
 Port the 9700's four-layer model verbatim in shape:
+- ⛔ **TARGET: the HL2.** It has native fwd/rev/temp/current; the Radioberry PA hat has none. Do not
+  do first-RF on the board that cannot tell you when it is in trouble.
+- **SWR + thermal guards, using the Phase-1c decoder:** refuse to key above an SWR threshold, and
+  unkey on rising reverse power or over-temperature. This is the guard the 9700 never had, and the
+  reason to wait for the HL2 rather than rush the Radioberry.
 - `_tx_armed=False` default, `arm_tx()`/`disarm_tx()`/`tx_ready()`/`key_tx()`/`unkey_tx()`.
 - **The bare-carrier guard, in the SAME commit as `key_tx` (see the section above).** Port
   `set_tx_audio_ready_probe` + the `engine.tx_audio_ready()` probe from `ddc164b`, but with **no
@@ -445,12 +460,54 @@ Flagged honestly rather than assumed:
 
   ⚠ Still unknown: **output power** and **duty-cycle limits** as numbers.
 
-  **⛔ THE HONEST CONCLUSION FOR TX: transmitting from this board means NO reflected-power
-  protection, NO PA thermal protection, and NO current sensing — none of it available at any price,
-  because the sensors are not fitted.** FT8 is 100% duty for 13 s. An antenna fault would be
-  invisible until something burns. That is a strong argument for **keeping the Radioberry RX-only**,
-  or for TX only into a dummy load with an external power meter and a human watching. This is
-  Nigel's call, not mine — but the plan should not pretend the risk is mitigated.
+  **⛔ CONCLUSION FOR TX *ON THE RADIOBERRY*: no reflected-power protection, no PA thermal
+  protection, no current sensing — not available at any price, because the sensors are not fitted.**
+  FT8 is 100% duty for 13 s. An antenna fault would be invisible until something burns.
+
+### ✅ THE HL2 CHANGES THIS — TARGET TX AT THE HL2, NOT THE RADIOBERRY (2026-07-16)
+Nigel has **ordered a Hermes-Lite 2**. That is the right TX target, and it removes the single worst
+risk in this plan, because **the HL2 has the telemetry natively — in the hardware, not on an optional
+companion board** (openHPSDR Protocol-1 response registers, HL2 wiki *Protocol*, ACK==0 base map):
+
+| Response register | `[31:16]` | `[15:0]` |
+|---|---|---|
+| `0x01` | **Temperature** | **Forward power** |
+| `0x02` | **Reverse power** | **Current** |
+
+Delivered in the C1–C4 response bytes of the EP6 C&C — i.e. **the exact bytes we already decoded
+live on the Radioberry today**, and which came back zero there. On an HL2 they should carry real
+values. So the telemetry decoder is worth building **now, against the Radioberry, RX-only** (it
+proves the parse path against known-zero fields), and it lights up when the HL2 arrives.
+
+**Revised recommendation: Phases 1–3 target the HL2.** The Radioberry stays an RX source. This is
+not a detour — the HL2 *is* the board this plan was always describing (`prototypes/hl2/`, board id
+`0x06`, gateware 7.x), and it is the one with fwd/rev/temp/current for the guards to act on.
+
+### ⚠ ON THE ATU-100 — it protects the ANTENNA path, NOT the PA
+Nigel: *"i also have an ATU-100 fitted to the output so it should be always ok."* **Do not build the
+TX plan on that.** Being straight about the gap rather than agreeing:
+- An ATU presents a **matched load once it has tuned**. It does **not** protect during the tune
+  itself, and a tuning cycle is exactly when the PA sees a bad match.
+- It cannot help with an **open/shorted feedline, a disconnected antenna, or a match outside its
+  range** — it will hunt and fail, with the PA keyed into whatever is there.
+- It does nothing for **thermal** limits. A 100%-duty FT8 sequence into a perfect 1:1 load still
+  heats the PA, and this board reports **no temperature**.
+- The ATU has no path to tell *us* anything — no feedback into Protocol-1. Our guards would still be
+  blind.
+So the ATU-100 meaningfully reduces the *usual* case, and is good to have. It is not a substitute
+for reflected-power or thermal sensing, which is precisely what the HL2 provides and this PA hat
+cannot.
+
+### On "4 W already reached Europe on FT8"
+Real and relevant: it proves the **TX chain, PA, LPF and antenna all work**, and that the firmware's
+auto filter selection does the right thing on air — that was previously only read from source. Worth
+recording as evidence the hardware path is sound. But note it proves the *hardware* works when driven
+by a **known-good client** (pihpsdr/Thetis/Quisk), which is a different question from whether **our
+gate** can drive it correctly. Our TX IQ, our MOX pacing, our sideband convention and our level
+scaling are all still unwritten and unproven. The 4 W contact raises confidence in the board, not in
+code that does not exist yet.
+
+  ⚠ Still unknown: **output power** and **duty-cycle limits** as numbers.
 - **`CONFIG_DUPLEX`** is already set on in `cc_config` (pihpsdr does it unconditionally). Its exact
   TX-side meaning here is unverified.
 - **Sideband convention on TX** — see Phase 3. Unknown until measured.
