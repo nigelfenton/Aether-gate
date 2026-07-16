@@ -1029,17 +1029,33 @@ class Icom9700Adapter(RadioAdapter):
         return _struct.pack(f"<{len(out)}h", *out)
 
     def set_span(self, span_hz):
-        """Follow AE's pan zoom: full width -> nearest Icom ± half-width setting."""
+        """Follow AE's pan zoom: full width -> nearest Icom ± half-width setting.
+        RETURNS the effective FULL span in Hz (2 x the snapped half-width) so the
+        engine can advertise `bandwidth=` to AE that matches the width of the
+        waterfall data actually produced. The 9700 scope only supports the
+        discrete SPANS_HZ half-widths, so AE's requested span is snapped; if the
+        gate keeps telling AE the *requested* span while the pixels span the
+        *snapped* one, AE's frequency ruler is scaled slightly wrong and a
+        click-to-tune lands off by that ratio (e.g. click 145.140 -> 145.1405)."""
         if not self._civ:
-            return
+            return None
         half = span_hz / 2.0
         want = min(Ic9700Civ.SPANS_HZ, key=lambda s: abs(s - half))
         now = time.monotonic()
         if want == self._span_half_hz or now - self._span_sent_at < 0.5:
-            return                          # unchanged, or rate-limit zoom drags
+            return self._span_half_hz * 2   # unchanged / rate-limited -> current effective span
         self._civ.set_span(want)
         self._span_half_hz = want
         self._span_sent_at = now
+        return want * 2                     # effective full span the scope now shows
+
+    def current_span_hz(self):
+        """The rig scope's actual FULL span in Hz (2 x the snapped half-width).
+        The engine reads this at connect to advertise a `bandwidth=` that matches
+        the waterfall data, so AE's frequency ruler — and click-to-tune — is to
+        scale from the first frame (AE never sends a bandwidth= itself; the gate
+        is the sole source of the pan span)."""
+        return self._span_half_hz * 2
 
     # --- spectrum (radio -> AE) ----------------------------------------
     def get_spectrum(self, ctx, t):

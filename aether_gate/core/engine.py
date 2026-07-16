@@ -1173,6 +1173,21 @@ class Radio:
                 if rhz or rmode:
                     log(f"[radio-wins] slice 0 seeded from radio: {freq:.5f} MHz {mode} "
                         f"(AE asked {kvs.get('freq','-')} {kvs.get('mode','-')})")
+                # Seed the pan span from the rig's ACTUAL scope width so the
+                # advertised bandwidth= matches the waterfall data. AE never
+                # sends a bandwidth= itself, so without this the gate advertises
+                # its default span while the scope is at a different width — AE's
+                # frequency ruler is then scaled wrong and click-to-tune lands off
+                # (e.g. click 145.140 -> 145.1405). Only a native-scope adapter.
+                try:
+                    shz = (self.adapter.current_span_hz()
+                           if hasattr(self.adapter, "current_span_hz") else None)
+                    if shz:
+                        self.span_mhz = float(shz) / 1e6
+                        log(f"[radio-wins] pan span seeded from rig scope: "
+                            f"{self.span_mhz:.6f} MHz")
+                except Exception as e:
+                    log("[adapter] span read failed on slice create:", e)
             for s in self.slices.values(): s["active"] = False
             self.slices[idx] = {"freq": freq, "mode": mode, "active": True, "pan": pid}
             self.pans[pid]["slice"] = idx
