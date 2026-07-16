@@ -413,12 +413,44 @@ Flagged honestly rather than assumed:
   stands: **no PA thermal protection, no SWR, no PA current.** The 100%-duty FT8 worry is NOT
   de-risked — it is exactly as open as before, and the fail-safe may mean the PA is disabled outright.
 
-  **Before ANY TX, resolve with Nigel:** is the preamp/measure module physically fitted? Is
-  `i2c_measure_module_active` set in his firmware build/config? Does `pa_temp_ok=0` mean his PA is
-  currently inhibited? If there is genuinely no temp sensing and no SWR, that is a strong argument
-  for keeping this RX-only.
+  **✅ EXPLAINED (Nigel + source, 2026-07-16). His board is a PA hat WITHOUT the MAX11613.** Nigel:
+  *"i think i have the pa board that does not have the max — that allows you to set the standing bias
+  electronicly."* The source agrees: `bias.h` says the MCP4662 dual digital pot (@`0x2C`) "is used to
+  set both bias settings for the **Radioberry preAmp**", and `measure.h` scopes the MAX11613 (@`0x34`)
+  to "the radioberry **preAmp**". **The measure ADC and the electronic-bias pot both live on the
+  preAmp board — which he does not have.** His PA hat has the T/R switch + I2C LPF; no ADC.
 
-  ⚠ Still unknown regardless: **output power** and **duty-cycle limits** as numbers.
+  And it is **autodetected, not configured** — which is why Nigel never saw a compile flag or setting
+  for it (`measure.c`):
+  ```c
+  void openI2C_measure(void) {
+      i2c_measure_module_active = 0;
+      fd_i2c_measure = open("/dev/i2c-1", O_RDWR);
+      ...
+      i2c_measure_handler = ioctl(fd_i2c_measure, I2C_SLAVE, ADDR_MEAS);   // 0x34
+      if (i2c_measure_handler >=0) if (config_I2C_measure()==1) i2c_measure_module_active = 1;
+      else close(i2c_measure_handler);
+  };
+  ```
+  The firmware probes `0x34`; nothing answers; the flag stays 0. Everything we measured follows.
+
+  **So this is a permanent property of his hardware, not a config to fix:**
+  - **No PA temperature, no PA current, no FWD/REV, no SWR — ever, on this board.**
+  - `pa_temp_ok=0` on every packet is therefore *expected*, not a fault. ⚠ **But the firmware
+    comment says "if temperature could not be measured the pa is disabled" and folds `pa_temp_ok`
+    into the gateware control word — so whether his PA is INHIBITED by this is an open question and
+    a Phase-2 blocker. It would explain "ive never noticed the temp when pa is disabled".**
+  - The HPSDR client's **PA on/off/enable setting** Nigel remembers is the operator declaring the PA
+    present — consistent with everything else here being host-declared rather than sensed.
+
+  ⚠ Still unknown: **output power** and **duty-cycle limits** as numbers.
+
+  **⛔ THE HONEST CONCLUSION FOR TX: transmitting from this board means NO reflected-power
+  protection, NO PA thermal protection, and NO current sensing — none of it available at any price,
+  because the sensors are not fitted.** FT8 is 100% duty for 13 s. An antenna fault would be
+  invisible until something burns. That is a strong argument for **keeping the Radioberry RX-only**,
+  or for TX only into a dummy load with an external power meter and a human watching. This is
+  Nigel's call, not mine — but the plan should not pretend the risk is mitigated.
 - **`CONFIG_DUPLEX`** is already set on in `cc_config` (pihpsdr does it unconditionally). Its exact
   TX-side meaning here is unverified.
 - **Sideband convention on TX** — see Phase 3. Unknown until measured.
