@@ -253,20 +253,52 @@ Flagged honestly rather than assumed:
   firmware, so *any* RPi-side I2C filter logic is not something we invoke. Whether the Radioberry's
   own firmware does it for us on TX is **UNVERIFIED**.
 
-  **⚠ STRONG EVIDENCE FOR THE HOST-DRIVEN (DANGEROUS) CASE (Nigel, 2026-07-16):** HPSDR client
-  software (pihpsdr/Thetis-class) exposes a **SETTING for whether the filter board is present** —
-  and whether it has the band-pass filter. **A setting that the operator declares is not
-  auto-detection.** If the filter were selected autonomously by the gateware from the TX NCO, the
-  host would have no reason to know or care that the board exists. This points hard at: the HOST is
-  expected to participate in filter selection, and a client that doesn't know about the board simply
-  will not drive it. **Our gate has no such setting and no such code — so on current evidence,
-  keying from the gate would transmit with the LPF bank unselected/unswitched.**
+  **✅ RESOLVED FROM SOURCE 2026-07-16 — and the news is GOOD.** It is **not** the gateware and it is
+  **not** the network client. It is the **Radioberry's own Pi-side firmware**, which selects the
+  filter *for us*, autonomously, from the frequency it sees in the EP2 stream.
 
-  **⛔ HARD GATE: resolve this from the gateware source / PA3GSB directly BEFORE any Phase 2 RF, and
-  do the first key into a DUMMY LOAD with a scope/analyser on the output — verify harmonic
-  suppression empirically rather than trusting either account.** Measure the thing, don't reason
-  about it. Phase 2 likely also needs a `filter_board=` config + the I2C/IO select path, mirroring
-  whatever pihpsdr does — i.e. the filter is *our* responsibility, exactly like the TX IQ.
+  Source: `SBC/rpi-5/device_driver/firmware/filters.h` (rpi-5 = Nigel's Pi), called from
+  `radioberry.c:390` — `handleFilters(buffer, CWX)` — on the inbound EP2 buffer:
+
+  ```c
+  else {
+      //firmware does determine the filter.
+      uint16_t hpf = 0, lpf = 0;
+      if (currentfreq < 1416000) hpf = 0x20;       /* bypass */
+      ...
+      if (currentfreq > 32000000) lpf = 0x10;      /* bypass */
+      else if (currentfreq > 22000000) lpf = 0x20; /* 12/10 meters */
+      else if (currentfreq > 15000000) lpf = 0x40; /* 17/15 meters */
+      else if (currentfreq > 8000000)  lpf = 0x01; /* 30/20 meters */
+      ...
+      i2c_alex_data = hpf << 8 | lpf;
+  }
+  ```
+
+  **Read the comment: "firmware does determine the filter."** That `else` is the fallback taken when
+  the host does NOT supply manual filter data — i.e. **exactly our case**. A plain Protocol-1 client
+  that never sends ALEX/manual-filter bytes gets **automatic, frequency-derived filter selection**
+  from the Radioberry's firmware. We do not have to drive I2C, and we cannot: our gate talks
+  Protocol-1 over the network to `:1024`; the firmware runs on the Radioberry's own Pi.
+
+  So Nigel's "HPSDR software has a filter-present setting" is real but is about the **manual
+  override path**: `handleALEX` first checks `(buffer[523] & 0xFE) == 0x12` (ALEX C0) and a manual
+  bit (`buffer[525] & 0x40`), and only falls through to auto if the host didn't supply data.
+  `handleN2ADRFilterBoard` is the same shape for the N2ADR board (mcp23008 @ 0x20; ALEX PCA9555 @
+  0x21; VA2SAJ switcher @ 0x22).
+
+  **Consequences for this plan — Phase 2 gets EASIER, not harder:**
+  - We do **not** need a `filter_board=` config or any I2C code. Sending nothing is the correct and
+    safe behaviour: it selects the auto path.
+  - ⚠ **But `currentfreq` is the firmware's own idea of frequency.** It is declared in `filters.h`
+    and set elsewhere in the driver — **VERIFY it tracks the TX NCO on TX, not just RX1.** If it
+    only follows RX1, then transmitting on a different frequency than we're listening on would
+    select the WRONG filter. This is the remaining question, and it is narrow.
+  - ⚠ `handleALEX` also has `currentMox`/`currentCW` state — T/R switching is firmware-side too.
+
+  **⛔ HARD GATE STANDS anyway: first key into a DUMMY LOAD with a scope/analyser, and confirm
+  harmonic suppression empirically.** Source-reading says the filter should be selected for us;
+  today's lesson says measure it rather than trust a code path we have not seen run.
 
   Still unknown besides: output power, duty-cycle limits, thermal behaviour. FT8 is 100% duty for
   13 s — unforgiving.
