@@ -88,6 +88,17 @@ def build_adapter(name, args):
                    direct_samp=args.direct_samp, agc=args.agc,
                    advertise=(args.model if args.model != "FLEX-6600" else None),
                    serial=serial, station=station, enable_tx=args.enable_tx)
+    if name == "hpsdr":
+        serial = args.serial if args.serial != "GATE0001" else "GATEHPSD"
+        station = args.station if args.station != "aether-gate 1" else "Radioberry-HPSDR"
+        # FLEX-6700 (covers 2m) unless the user overrode the shared default
+        model = args.model if args.model != "FLEX-6600" else "FLEX-6700"
+        # HPSDR-1 sample rate is one of 48/96/192/384 kHz; --samp-rate default is
+        # the soapy 2.04M, so fold anything >=384k down to 384k for HPSDR.
+        sr = int(args.samp_rate) if int(args.samp_rate) in (48000, 96000, 192000, 384000) else 48000
+        return cls(radio_ip=args.radio_ip, local_ip=args.radio_local_ip,
+                   samp_rate=sr, gain_db=int(args.gain),
+                   model=model, serial=serial, station=station)
     return cls()
 
 

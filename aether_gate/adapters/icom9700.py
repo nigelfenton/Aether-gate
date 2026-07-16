@@ -503,6 +503,7 @@ class Icom9700Adapter(RadioAdapter):
         self._tx_lock = threading.Lock()
         # --- TX AUDIO (Stage 2): drain AE's dax_tx ring -> 9700 while keyed. ---
         self._tx_audio_source = None      # engine.drain_tx_audio (set via set_tx_audio_source)
+        self._tx_audio_ready = None       # engine.tx_audio_ready probe (bare-carrier guard)
         self._tx_audio_thread = None      # per-key drain thread
         self._tx_audio_stop = None        # threading.Event to stop the drain thread
         self._tx_resample_carry = b""     # 24k->48k upsampler state (last sample)
@@ -854,12 +855,43 @@ class Icom9700Adapter(RadioAdapter):
         f = self._civ.freq_hz if self._civ else None
         mhz = (f / 1e6) if f else None
         in_band = bool(mhz and any(lo <= mhz <= hi for lo, hi in self.TX_BANDS_MHZ))
+        digital = self._is_digital_mode()
+        dax_ok = self._dax_tx_registered()
         return {"armed": self._tx_armed, "in_band": in_band, "freq_mhz": mhz,
-                "keyed": self._tx_keyed}
+                "keyed": self._tx_keyed,
+                # bare-carrier guard state: in a digital mode with no dax_tx
+                # stream, key_tx will refuse (AE would key an unmodulated carrier)
+                "digital_mode": digital, "dax_tx_registered": dax_ok,
+                "would_be_bare_carrier": bool(digital and not dax_ok)}
 
-    def key_tx(self):
+    # Modes where the ONLY TX audio source is AE's dax_tx stream. In these, no
+    # registered stream == guaranteed bare carrier. Voice modes (USB/LSB/FM/AM)
+    # are driven by the rig's own mic and are deliberately NOT listed.
+    DIGITAL_MODES = ("DFM", "DIGU", "DIGL", "RTTY", "FDV", "DATA-U", "DATA-L")
+
+    def _is_digital_mode(self):
+        """True if the active mode gets its TX audio from AE, not the rig's mic."""
+        m = (getattr(self, "_mode", None) or "").upper()
+        return any(m == d or m.startswith(d) for d in self.DIGITAL_MODES)
+
+    def _dax_tx_registered(self):
+        """True if AE has a live dax_tx stream (engine probe). Fail SAFE: if the
+        probe is missing (older engine / not wired), assume registered so this
+        guard can never wedge a working setup."""
+        probe = getattr(self, "_tx_audio_ready", None)
+        if probe is None:
+            return True
+        try:
+            return bool(probe())
+        except Exception:
+            return True
+
+    def key_tx(self, force=False):
         """Key the transmitter — ONLY if armed AND in a legal band. Arms a
-        watchdog that force-unkeys after TX_MAX_KEY_S. Returns True if keyed."""
+        watchdog that force-unkeys after TX_MAX_KEY_S. Returns True if keyed.
+
+        force=True skips ONLY the bare-carrier guard (for a deliberate carrier,
+        e.g. tuning). It does NOT bypass arm, band-check or the watchdog."""
         with self._tx_lock:
             if not self._tx_armed:
                 print("[tx] REFUSED: not armed (call arm_tx first)", flush=True)
@@ -872,6 +904,22 @@ class Icom9700Adapter(RadioAdapter):
             if not (mhz and any(lo <= mhz <= hi for lo, hi in self.TX_BANDS_MHZ)):
                 print(f"[tx] REFUSED: {mhz} MHz not a TX-allowed band "
                       f"{self.TX_BANDS_MHZ} (23cm/1.2GHz TX is disabled)", flush=True)
+                return False
+            # BARE-CARRIER GUARD. In a DIGITAL mode the only TX audio source is
+            # AE's dax_tx stream. If AE never registered one, no audio can ever
+            # arrive (the prime loop drops every VITA packet without a stream id),
+            # so keying would radiate an UNMODULATED CARRIER for the full watchdog
+            # period. Measured 2026-07-15: 127 of 261 keys ran exactly like this —
+            # AE sent `transmit set dax=1` + `xmit 1` with no `stream create
+            # type=dax_tx`, and every one produced `drain END (0 real audio)`.
+            # Voice modes are unaffected: the rig's own mic is the source there,
+            # so no dax_tx is expected and this guard must not fire.
+            if not force and self._is_digital_mode() and not self._dax_tx_registered():
+                print("[tx] REFUSED: digital mode but AE has registered no dax_tx "
+                      "stream — keying now would transmit a BARE CARRIER. "
+                      "(AE sometimes keys without `stream create type=dax_tx`; "
+                      "re-open the digital/modem panel in AE, or use force=True "
+                      "if you really want an unmodulated carrier.)", flush=True)
                 return False
             if self._tx_keyed:
                 return True                            # already keyed
@@ -917,6 +965,12 @@ class Icom9700Adapter(RadioAdapter):
         """Engine seam: `source()` (or source(max_bytes)) returns buffered AE TX
         audio as mono int16 LE @ 24 kHz (the dax_tx rate). Called once at wiring."""
         self._tx_audio_source = source
+
+    def set_tx_audio_ready_probe(self, probe):
+        """Engine seam: `probe()` -> True if AE has registered a dax_tx stream, so
+        TX audio CAN arrive. Used by key_tx to refuse a bare-carrier key in a
+        digital mode. Called once at wiring."""
+        self._tx_audio_ready = probe
 
     def _start_tx_audio(self):
         """Spawn the drain thread that streams AE's modem audio to the rig for as

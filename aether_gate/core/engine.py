@@ -747,6 +747,16 @@ class Radio:
                 adapter.set_tx_audio_source(self.drain_tx_audio)
             except Exception as e:
                 log("[dax-tx] set_tx_audio_source failed:", e)
+        # Also hand it a probe for whether AE has actually REGISTERED a dax_tx
+        # stream. Without this the adapter cannot tell "ring momentarily empty"
+        # from "AE never created the stream, so no audio can ever arrive" — and
+        # the latter means keying produces a BARE CARRIER. Measured on Jul 15:
+        # 127 of 261 keys ran with no dax_tx stream registered. See tx_audio_ready.
+        if adapter is not None and hasattr(adapter, "set_tx_audio_ready_probe"):
+            try:
+                adapter.set_tx_audio_ready_probe(self.tx_audio_ready)
+            except Exception as e:
+                log("[dax-tx] set_tx_audio_ready_probe failed:", e)
         if adapter is not None and getattr(adapter, "capabilities", None) is not None:
             model = adapter.capabilities.model or model   # adapter identity drives discovery/caps
         self.model = model if model in MODELS else MODEL
@@ -1000,6 +1010,21 @@ class Radio:
             pk = max((abs(v) for v in mono), default=0.0)
             log(f"[dax-tx] rx frames={self.tx_audio_frames} ring={len(self.tx_pcm_ring)}B peak={pk:.3f}")
 
+    def tx_audio_ready(self):
+        """True if AE has registered a dax_tx stream, i.e. TX audio CAN arrive.
+
+        Not "audio is buffered right now" — the ring is legitimately empty between
+        modem bursts. This answers the different question: is there a live stream
+        id at all? Without one the prime loop's guard drops every inbound VITA
+        packet before _decode_dax_tx, so no audio can EVER arrive and keying gives
+        a bare carrier. AE does not always send `stream create type=dax_tx` before
+        it keys (measured 2026-07-15: 127 of 261 keys had no stream registered —
+        AE sent `transmit set dax=1` + `xmit 1` with no stream create); the trigger
+        for when AE does vs doesn't is not yet understood, so the adapter must
+        check rather than assume.
+        """
+        return self.dax_tx_stream_id is not None
+
     def drain_tx_audio(self, max_bytes=None):
         """Pop up to max_bytes of buffered AE TX audio (mono int16 LE at AE's
         dax_tx rate, AUDIO_RATE = 24 kHz) from tx_pcm_ring; return b'' when empty. The
@@ -1173,6 +1198,20 @@ class Radio:
                 if rhz or rmode:
                     log(f"[radio-wins] slice 0 seeded from radio: {freq:.5f} MHz {mode} "
                         f"(AE asked {kvs.get('freq','-')} {kvs.get('mode','-')})")
+                # Seed the pan span from the adapter's ACTUAL data width so the
+                # advertised bandwidth= matches the IQ. AE never sends a bandwidth,
+                # so without this an IQ adapter's data (e.g. HPSDR 48 kHz) is drawn
+                # across the gate's default span -> axis scaled wrong, signals land
+                # at the wrong freq (FT8 shifts off to one side).
+                try:
+                    shz = (self.adapter.current_span_hz()
+                           if hasattr(self.adapter, "current_span_hz") else None)
+                    if shz:
+                        self.span_mhz = float(shz) / 1e6
+                        log(f"[radio-wins] pan span seeded from adapter: "
+                            f"{self.span_mhz:.6f} MHz")
+                except Exception as e:
+                    log("[adapter] span read failed on slice create:", e)
             for s in self.slices.values(): s["active"] = False
             self.slices[idx] = {"freq": freq, "mode": mode, "active": True, "pan": pid}
             self.pans[pid]["slice"] = idx
@@ -1197,6 +1236,15 @@ class Radio:
             if "y_pixels" in kvs: self.y_pixels = max(2, int(kvs["y_pixels"]))
             if "min_dbm" in kvs: self.min_dbm = float(kvs["min_dbm"])
             if "max_dbm" in kvs: self.max_dbm = float(kvs["max_dbm"])
+            # AE's RF-gain slider -> a real adapter's front-end gain (e.g. the
+            # HPSDR/Radioberry LNA). Optional seam: no-op unless the adapter
+            # implements set_gain. AE sends rfgain 0..100.
+            if "rfgain" in kvs and self.adapter is not None \
+                    and hasattr(self.adapter, "set_gain"):
+                try:
+                    self.adapter.set_gain(float(kvs["rfgain"]))
+                except Exception as e:
+                    log("[adapter] set_gain error:", e)
             if "bandwidth" in kvs:
                 self._set_pan_span_hz(float(kvs["bandwidth"]) * 1e6)
             zoom_changed = self._handle_pan_zoom(pid, kvs)
@@ -2183,11 +2231,27 @@ class Radio:
                 except Exception:
                     pass
             pw = pw if keyed else 0.0
-            sw = self.tx_swr if keyed else 1.0
+            # SWR: prefer the radio's MEASURED value when it really has fwd/rev
+            # sensors. An adapter that cannot measure SWR must not publish 1.0 —
+            # "perfect match" is the most dangerous possible lie, so we skip the
+            # meter entirely and let AE show no reading rather than a false good
+            # one. (Adapters without swr_is_measured() keep the old behaviour.)
+            sw, swr_real = self.tx_swr, True
+            if self.adapter is not None and hasattr(self.adapter, "swr_is_measured"):
+                try:
+                    swr_real = bool(self.adapter.swr_is_measured())
+                    if swr_real:
+                        m = self.adapter.read_meters()
+                        if m is not None and m.swr:
+                            sw = m.swr
+                except Exception:
+                    swr_real = False
+            sw = sw if keyed else 1.0
             fwd_dbm = 10.0 * math.log10(max(pw, 1e-6)) + 30.0
             try:
                 s.sendto(meter_packet(self.meter_sid, mseq & 0xF, FWDPWR_ID, fwd_dbm), dest); mseq += 1
-                s.sendto(meter_packet(self.meter_sid, mseq & 0xF, SWR_ID, sw), dest); mseq += 1
+                if swr_real:
+                    s.sendto(meter_packet(self.meter_sid, mseq & 0xF, SWR_ID, sw), dest); mseq += 1
             except OSError:
                 pass
             dt = period - (time.time() - now)

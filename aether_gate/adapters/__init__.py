@@ -14,6 +14,7 @@ from .icom9700 import Icom9700Adapter   # icom/ LAN transport imports are stdlib
 from .icom7300 import Icom7300Adapter   # USB CI-V; pyserial import is deferred/optional
 from .kenwood import KenwoodAdapter     # hamlib(rigctld TCP) + soapy; imports stdlib-only here
 from .yaesu import YaesuAdapter         # thin subclass of KenwoodAdapter; Yaesu registry + defaults
+from .hpsdr import HpsdrAdapter         # HPSDR Protocol-1 SDR (Radioberry/HL2); numpy import deferred to open()
 
 _REGISTRY = {
     "sim": SimAdapter,
@@ -22,6 +23,7 @@ _REGISTRY = {
     "icom7300": Icom7300Adapter,
     "kenwood": KenwoodAdapter,
     "yaesu": YaesuAdapter,
+    "hpsdr": HpsdrAdapter,
 }
 
 
