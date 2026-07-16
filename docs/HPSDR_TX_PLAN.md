@@ -194,8 +194,11 @@ Port the 9700's four-layer model verbatim in shape:
   single-slice anyway this costs nothing, and it converts a hardware hazard into a guard.
 - `tx_capable` **stays False** — AE must not be able to key it. Human calls `key_tx()`.
 - Auto-unkey + disarm in `close()` and on AE disconnect.
-- MOX held by the `_cc_loop` sender thread (it already owns EP2 egress at 20 Hz — but see §4:
-  TX IQ needs a much faster cadence, so keying likely needs its own pacing).
+- **MOX does NOT go in `_cc_loop`** — that is settled, not open. §4 measured the TX cadence at
+  `rate/126` = **381 pkt/s at 48 kHz**, vs `_cc_loop`'s 20 Hz. TX needs its OWN sender paced at
+  `rate/126`, carrying MOX + TX IQ in every packet; `_cc_loop` stays the RX register-latcher.
+  Two senders on one socket needs a deliberate story (likely: TX sender takes over egress while
+  keyed, `_cc_loop` pauses) — design it, don't discover it.
 
 **Testing:** ⚠ **dummy load. Lowest achievable drive. Watch the Radioberry's PA temperature.**
 First test is `key_tx()` → 1 s → `unkey_tx()`, verifying the watchdog fires if we don't.
