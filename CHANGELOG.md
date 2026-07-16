@@ -2,6 +2,33 @@
 
 All notable changes to Aether-gate. Newest first.
 
+## [Unreleased]
+
+### Fixed
+- **The 0.5 s waterfall tick — librtlsdr's USB lump.** The driver delivers fixed
+  262,144-byte transfers (131,072 samples) regardless of sample rate: 64 ms of
+  signal per lump at 2.04 MS/s, but **524 ms at 250 kS/s** — the panadapter and
+  audio can only be as fresh as the lumps, so the display ticked at ~2 Hz while
+  every layer above measured healthy (engine loop 19.97 Hz, reader 56 blocks/s
+  *average* — but bursty: p50 gap 0.01 ms, max 524.06 ms). Fix: size `bufflen` to
+  ~30 ms of signal at the configured rate and pass it as **stream args**
+  (SoapyRTLSDR ignores it in device args). Measured: engine freshness went from
+  2.0 to 20.0 new blocks/s — every frame now carries new IQ. Also improves the
+  2.04 MS/s default (64→28 ms) and steadies the audio demod feed.
+- **`kenwood` `set_span()` advertised a span it does not deliver** (bare `pass` →
+  the engine kept AE's requested span while the dongle delivered its own). At the
+  2.04 MHz default the ratio happened to be ~1 so it hid; at 250 kHz AE painted a
+  2.04 MHz axis with 250 kHz of data — the "fewer signals" report. Now returns the
+  dongle's real sample rate, exactly as the HPSDR adapter always did.
+- Both "known limitations" flagged in 0.3.0 for 250 kHz operation are hereby
+  resolved; `--samp-rate 250000` is now the better HF setting for the kenwood
+  gate (156 Hz/px vs 1275).
+
+### Added
+- `AETHER_GATE_PROFILE=1` — stream-loop + soapy read-loop instrumentation
+  (loop Hz, per-phase ms, IQ freshness, read-gap stats). Off by default, ~free
+  when off. It is how both bugs above were found.
+
 ## [0.3.0] — 2026-07-16
 
 Adds the **HPSDR / Protocol-1 adapter** (Radioberry, Hermes-Lite 2), radio-reported

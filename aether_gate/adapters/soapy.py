@@ -27,6 +27,20 @@ AUDIO_RATE = 24000          # AE remote_audio_rx rate (must match core AUDIO_RAT
 SSB_BW_HZ = 2700.0          # SSB audio passband width
 
 
+def rtl_bufflen(samp_rate, target_s=0.030):
+    """USB transfer size (BYTES) giving ~target_s of signal per transfer.
+
+    CS8 on the wire = 2 bytes per complex sample, so bytes = 2*rate*target.
+    librtlsdr wants the length in 16384-byte granules (URB constraint), and
+    16384 is also the practical floor. Examples at the 30 ms default:
+      250 kS/s -> 16384 B  (32.8 ms/lump, ~30 updates/s)
+      2.04 MS/s -> 114688 B (28.1 ms/lump) — vs the driver default 262144 B,
+      which is 64 ms at 2.04M and a display-freezing 524 ms at 250k.
+    """
+    bl = int(2 * float(samp_rate) * target_s)
+    return max(16384, (bl // 16384) * 16384)
+
+
 class SoapyAdapter(RadioAdapter):
     """Live IQ from a SoapySDR device. The core runs the FFT (provides='iq')."""
 
@@ -96,7 +110,29 @@ class SoapyAdapter(RadioAdapter):
             except Exception:
                 pass
 
-        self._stream = self._sdr.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32)
+        # --- stream setup: size the USB transfer to the SAMPLE RATE ---------
+        # librtlsdr hands data up in fixed-size USB transfers — 262144 bytes =
+        # 131072 complex samples per lump by default, REGARDLESS of sample rate.
+        # At 2.04 MS/s that is a 64 ms lump; at 250 kS/s it is a 524 ms lump: the
+        # panadapter/audio can only be as fresh as the lumps, so the display
+        # "ticks" every half-second while every layer above measures healthy.
+        # (Measured 2026-07-16: reader avg 56 blocks/s but BURSTY — p50 gap
+        # 0.01 ms, max 524.06 ms; the 20 Hz engine loop saw 2.0 fresh blocks/s.
+        # With bufflen=16384 the gaps flatten to p50=32.6 max=33.1 ms.)
+        # ⚠ bufflen must go in the STREAM args (setupStream) — SoapyRTLSDR
+        # ignores it in the Device args, which is how this hid from an earlier
+        # test. Honour an explicit bufflen/buffers from --soapy-args either way.
+        stream_args = {}
+        if self.driver == "rtlsdr":
+            ua = {}
+            for kv in (self.device_args or "").split(","):
+                if "=" in kv:
+                    k, v = kv.split("=", 1)
+                    ua[k.strip()] = v.strip()
+            stream_args["bufflen"] = ua.get("bufflen") or str(rtl_bufflen(self.samp_rate))
+            if "buffers" in ua:
+                stream_args["buffers"] = ua["buffers"]
+        self._stream = self._sdr.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32, [], stream_args)
         self._sdr.activateStream(self._stream)
 
         # --- demod setup: STAGED decimation (samp_rate -> AUDIO_RATE) ---

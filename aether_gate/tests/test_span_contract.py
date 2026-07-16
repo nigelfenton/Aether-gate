@@ -73,3 +73,21 @@ def test_hpsdr_already_honours_the_contract():
     a = HpsdrAdapter.__new__(HpsdrAdapter)
     a.samp_rate = 48_000
     assert _engine_set_pan_span(a, 2_040_000) * 1e6 == pytest.approx(48_000)
+
+
+# --- USB lump sizing (the 0.5 s waterfall tick) ------------------------------
+def test_rtl_bufflen_tracks_sample_rate():
+    """librtlsdr's default 262144-byte transfer is 524 ms of signal at 250 kS/s —
+    the panadapter can only update when a lump lands, so the display ticked at
+    ~2 Hz while every layer above measured healthy. bufflen must scale with the
+    sample rate (~30 ms of signal), stay on 16384-byte URB granules, and never
+    fall below the 16384 floor."""
+    from aether_gate.adapters.soapy import rtl_bufflen
+
+    assert rtl_bufflen(250_000) == 16384          # 32.8 ms — was 524 ms
+    assert rtl_bufflen(2_040_000) == 114688       # 28.1 ms — was 64 ms
+    assert rtl_bufflen(48_000) == 16384           # floor
+    for sr in (250_000, 1_020_000, 2_040_000, 3_200_000):
+        bl = rtl_bufflen(sr)
+        assert bl % 16384 == 0 and bl >= 16384
+        assert (bl / 2 / sr) <= 0.035             # never lumpier than ~35 ms
