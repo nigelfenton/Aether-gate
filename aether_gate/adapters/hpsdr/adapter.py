@@ -47,8 +47,12 @@ class HpsdrAdapter(RadioAdapter):
         self.gain_db = int(gain_db)
         self.center_hz = float(center_hz)
         # HPSDR span = the full sample rate (complex IQ). Min a sensible zoom floor.
+        # native_centered_scope: the HPSDR NCO tune means the IQ is ALWAYS centered
+        # on the tuned freq (WWV @ 10 MHz lands at baseband DC), so the pan must
+        # re-centre on the VFO as AE tunes — else the cursor drifts within a fixed
+        # frame and the pan sits off the receive freq.
         self.capabilities = AdapterCaps(model=model, serial=serial, station=station,
-                                        tx_capable=False,
+                                        tx_capable=False, native_centered_scope=True,
                                         min_span_hz=6_000.0, max_span_hz=self.samp_rate)
         self._sock = None
         self._dst = None                   # (radio_ip, 1024)
@@ -59,6 +63,7 @@ class HpsdrAdapter(RadioAdapter):
         self._latest = None                # most recent complex block for the panadapter FFT
         self._ep2_seq = 0
         self._retune_to = None             # pending centre change (applied in the reader)
+        self._gain_dirty = False           # AE moved the RF-gain slider (rebuild gain reg)
         self._board_id = None
 
     # --- lifecycle -------------------------------------------------------
@@ -170,6 +175,9 @@ class HpsdrAdapter(RadioAdapter):
                 self._retune_to = None
                 cc_cycle[2] = hp.cc_rx1_freq(int(self.center_hz))
                 buf = []; settle_from = time.monotonic()
+            if self._gain_dirty:
+                self._gain_dirty = False
+                cc_cycle[1] = hp.cc_rx_gain(self.gain_db)   # AE slider -> LNA reg
             # SEND EP2 then RECEIVE (the spike's ordering) — round-robin config/
             # gain/freq so all three stay latched, paced 1:1 with the EP6 stream.
             self._send_cc(cc_cycle[ci % 3], cc_cycle[(ci + 1) % 3]); ci += 1
@@ -196,11 +204,26 @@ class HpsdrAdapter(RadioAdapter):
     def retune(self, center_hz):
         self._retune_to = float(center_hz)
 
+    def set_gain(self, rfgain):
+        """Map AE's RF-gain slider (0..100) to the HPSDR LNA range (-12..+48 dB)
+        and apply it live (the reader's round-robin re-latches the gain register).
+        Takes effect on the next frame; no restart needed."""
+        rfgain = max(0.0, min(100.0, float(rfgain)))
+        self.gain_db = int(round(-12 + rfgain / 100.0 * 60))   # 0->-12dB, 100->+48dB
+        self._gain_dirty = True
+
     def set_span(self, span_hz):
         """Follow AE's pan zoom onto the nearest HPSDR sample rate. Returns the
         effective full span (= the sample rate) so the engine advertises a
         bandwidth that matches the IQ width. Changing rate needs a restart, so
         for now we only report; live rate-switching is future work."""
+        return float(self.samp_rate)
+
+    def current_span_hz(self):
+        """The IQ width the gate should advertise to AE (= the sample rate). AE
+        never sends a bandwidth itself, so without this the gate advertises its
+        default span while the data is 48 kHz — AE's frequency axis is then ~5x
+        too wide and signals land at the wrong freq (FT8 shifts left)."""
         return float(self.samp_rate)
 
     # --- the IQ source --------------------------------------------------

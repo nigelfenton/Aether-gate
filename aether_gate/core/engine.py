@@ -1173,6 +1173,20 @@ class Radio:
                 if rhz or rmode:
                     log(f"[radio-wins] slice 0 seeded from radio: {freq:.5f} MHz {mode} "
                         f"(AE asked {kvs.get('freq','-')} {kvs.get('mode','-')})")
+                # Seed the pan span from the adapter's ACTUAL data width so the
+                # advertised bandwidth= matches the IQ. AE never sends a bandwidth,
+                # so without this an IQ adapter's data (e.g. HPSDR 48 kHz) is drawn
+                # across the gate's default span -> axis scaled wrong, signals land
+                # at the wrong freq (FT8 shifts off to one side).
+                try:
+                    shz = (self.adapter.current_span_hz()
+                           if hasattr(self.adapter, "current_span_hz") else None)
+                    if shz:
+                        self.span_mhz = float(shz) / 1e6
+                        log(f"[radio-wins] pan span seeded from adapter: "
+                            f"{self.span_mhz:.6f} MHz")
+                except Exception as e:
+                    log("[adapter] span read failed on slice create:", e)
             for s in self.slices.values(): s["active"] = False
             self.slices[idx] = {"freq": freq, "mode": mode, "active": True, "pan": pid}
             self.pans[pid]["slice"] = idx
@@ -1197,6 +1211,15 @@ class Radio:
             if "y_pixels" in kvs: self.y_pixels = max(2, int(kvs["y_pixels"]))
             if "min_dbm" in kvs: self.min_dbm = float(kvs["min_dbm"])
             if "max_dbm" in kvs: self.max_dbm = float(kvs["max_dbm"])
+            # AE's RF-gain slider -> a real adapter's front-end gain (e.g. the
+            # HPSDR/Radioberry LNA). Optional seam: no-op unless the adapter
+            # implements set_gain. AE sends rfgain 0..100.
+            if "rfgain" in kvs and self.adapter is not None \
+                    and hasattr(self.adapter, "set_gain"):
+                try:
+                    self.adapter.set_gain(float(kvs["rfgain"]))
+                except Exception as e:
+                    log("[adapter] set_gain error:", e)
             if "bandwidth" in kvs:
                 self._set_pan_span_hz(float(kvs["bandwidth"]) * 1e6)
             zoom_changed = self._handle_pan_zoom(pid, kvs)
