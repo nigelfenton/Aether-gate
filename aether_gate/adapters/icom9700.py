@@ -1045,7 +1045,12 @@ class Icom9700Adapter(RadioAdapter):
     def get_spectrum(self, ctx, t):
         dbm = self._civ.latest_dbm if self._civ else None
         if not dbm:
-            return [ctx.floor] * ctx.n          # flat floor until scope produces pixels
+            # No live scope frames yet (fresh session, or _civ=None during a
+            # reconnect window). Returning None makes engine.py's stream_loop
+            # skip the pan/wf emit for this tick, so AE keeps its prior
+            # waterfall history instead of being repainted with the noise
+            # floor (which read as a dead-black waterfall in v26.7.x AE).
+            return None
         return _resample(dbm, ctx.n)
 
     def get_audio(self, n_samples, slice_hz=None, mode=None):
