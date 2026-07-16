@@ -185,10 +185,20 @@ Flagged honestly rather than assumed:
   firmware, so *any* RPi-side I2C filter logic is not something we invoke. Whether the Radioberry's
   own firmware does it for us on TX is **UNVERIFIED**.
 
+  **⚠ STRONG EVIDENCE FOR THE HOST-DRIVEN (DANGEROUS) CASE (Nigel, 2026-07-16):** HPSDR client
+  software (pihpsdr/Thetis-class) exposes a **SETTING for whether the filter board is present** —
+  and whether it has the band-pass filter. **A setting that the operator declares is not
+  auto-detection.** If the filter were selected autonomously by the gateware from the TX NCO, the
+  host would have no reason to know or care that the board exists. This points hard at: the HOST is
+  expected to participate in filter selection, and a client that doesn't know about the board simply
+  will not drive it. **Our gate has no such setting and no such code — so on current evidence,
+  keying from the gate would transmit with the LPF bank unselected/unswitched.**
+
   **⛔ HARD GATE: resolve this from the gateware source / PA3GSB directly BEFORE any Phase 2 RF, and
   do the first key into a DUMMY LOAD with a scope/analyser on the output — verify harmonic
   suppression empirically rather than trusting either account.** Measure the thing, don't reason
-  about it.
+  about it. Phase 2 likely also needs a `filter_board=` config + the I2C/IO select path, mirroring
+  whatever pihpsdr does — i.e. the filter is *our* responsibility, exactly like the TX IQ.
 
   Still unknown besides: output power, duty-cycle limits, thermal behaviour. FT8 is 100% duty for
   13 s — unforgiving.
