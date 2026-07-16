@@ -209,12 +209,35 @@ So the band-select I2C write (`0x20`) is one direction; reading a sensor on the 
 (1) protects the PA; (2) better reflects the antenna/feedline. Start with (1) — it is already
 working and costs nothing. Add (2) only if the two disagree in a way that matters.
 
-⚠ **Unverified:** the wiki documents the I2C read *mechanism*, but does **not** document a companion
-SWR sensor's I2C address or register map — the wiki text suggests sensor reads are a secondary/future
-use case. **So before building (2): identify the actual sensor part, its I2C address, and its register
-map from the N2ADR schematic (`hardware/companions/n2adr/n2adr.sch`) or from Nigel's board.** Do not
-assume it is I2C-readable at all — it may be an analog line feeding the HL2's own ADC, in which case
-it arrives via (1) anyway. Nigel is the electronics authority here; ask him what the sensor part is.
+**✅ ANSWERED — and (2) does not exist as a separate source. Nigel called it from the parts list.**
+He checked his board: the only I2C device on it is an **MCP23008T-E/SS**, and inferred the detectors
+must be diodes. That is decisive:
+
+- The **MCP23008 is an 8-bit I/O expander — GPIO only, NO ADC.** It cannot digitise anything. It is
+  there to switch the filter relays, nothing more.
+- The Radioberry firmware confirms the usage: it only ever `write()`s to the N2ADR at `0x20`, and
+  `ldata[0] = 0x09` is the MCP23008's **OLAT (output latch)** register. Pure output.
+- So **the filter board's SWR bridge cannot be read over I2C** — there is no device on that bus
+  capable of it. The RQST/`0x07` I2C read path is real, but there is nothing there to read.
+
+**Where the SWR bridge actually goes:** the N2ADR filter board "contains filters to clean up the
+transmitter output but also **an SWR bridge and power sensor**", and it mates directly to the HL2
+mainboard. The diode detectors feed **analog lines through the board-to-board connector into the
+HL2's own ADC** — which is exactly what surfaces as the HL2's native fwd/rev in response registers
+`0x01`/`0x02`.
+
+**So (1) and (2) are the SAME sensor.** The HL2's "native" fwd/rev *is* the filter board's SWR bridge,
+read by the HL2's ADC. There is no second source to poll and nothing extra to build:
+**Phase 1c (`a1fd077`) already decodes it.** It reads zero on the Radioberry because that board has
+neither the HL2's ADC path nor the N2ADR bridge.
+
+⚠ Consequence worth noting: **the HL2's fwd/rev therefore measures AFTER the low-pass filter**, at
+the filter board — i.e. what the antenna sees, which is the more useful place for an SWR guard. Good
+news for Phase 2.
+
+⚠ Still to confirm on real hardware: that Nigel's incoming HL2 is fitted with the N2ADR filter board
+(the bridge lives on it, not on the HL2 mainboard). Without that board there may be no fwd/rev at all
+— the same "sensor not fitted" trap as the Radioberry, and Phase 1c's `has_sensors` will say so.
 
 ### Phase 2 — guarded PTT, DUMMY LOAD ONLY ⚠ FIRST RF — **ON THE HL2, NOT THE RADIOBERRY**
 Port the 9700's four-layer model verbatim in shape:
