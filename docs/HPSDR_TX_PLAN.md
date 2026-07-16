@@ -80,17 +80,30 @@ instrument** — verify what is actually radiated, don't infer it from code that
 
 ## 3. Phases
 
-### Phase 0 — unblock dax_tx (NOT HPSDR work) ⬅ START HERE
-Resolve why AE sends no TX audio, using the 9700's existing instrumentation:
-- Enable AE's AX.25 VERBOSE/diagnostics logging (dialog debug toggle) → why `maybeStartNextKissTx`
-  defers.
-- AE log (linux): `~/.config/AetherSDR/logs/aethersdr-*.log`, grep `dax|ax25|route=|KISS|txStreamId`.
-- Gate: `[dax-tx] rx` heartbeat in `_decode_dax_tx`; `tcpdump src .112 dst .128 greater 200 | wc -l`.
+### Phase 0 — ✅ ALREADY PASSES (checked 2026-07-16). The blocker was stale.
+**AE DOES send dax_tx audio.** `journalctl -u aether-gate-9700` over 7 days shows **304 `[dax-tx] rx`
+heartbeats on Jul 15** (15:14:48 → 21:43:06), up to `frames=3801 ring=5184B peak=0.350` — real audio at a
+healthy level, arriving *while keyed* (`[tx] KEYED @ 145.07 MHz` → `[dax-tx] rx` → `[tx] UNKEYED`).
+Something between 07-11 and 07-15 fixed it; the `maybeStartNextKissTx`-defers hypothesis is dead.
 
-**Exit:** the gate decodes a nonzero, sustained dax_tx frame rate while AE transmits. Outcome is
-either an AE bug (report to Jeremy) or a state we can satisfy.
+**Phase 0's exit criterion — "the gate decodes a sustained dax_tx frame rate while AE transmits" — is
+already met.** No work needed. The TX-audio *source* exists.
 
-**Until Phase 0 passes, do not start Phase 2.** A TX path with no audio source is a carrier generator.
+### Phase 0b — the REAL blocker: the gate forwards SILENCE ⬅ START HERE
+The gate receives good audio (`peak=0.350`) but frequently sends **`peak=0`** onward to the radio:
+of 4 sampled `[txaudio-send]` frames, only one (`frame=6400`) had `peak=11452`; `6200`/`6600`/`6800`
+were all `peak=0`. This is the drain/key alignment race (the older "reaches radio as SILENCE (timing
+sync)" note) — **not** an AE supply problem.
+
+Chase `_tx_audio_loop`: why does the drain emit silence-fill while `tx_pcm_ring` holds real audio?
+Suspects: drain starts before the ring fills (`drain START (tx_frames=0)`); silence lead/out padding
+overrunning the real payload; key ends before buffered audio lands.
+
+**Exit:** `[txaudio-send]` shows sustained nonzero `peak` for the duration of a keyed transmission.
+
+**This is 9700 work, and it is the honest prerequisite.** It is also RF-free to diagnose (read logs;
+the rig can stay on a dummy load or the key path can be exercised without an antenna).
+**Until Phase 0b passes, do not start Phase 2.** A TX path that forwards silence is a carrier generator.
 
 ### Phase 1 — TX plumbing, INERT (no RF)
 No MOX, nothing keys. Pure offline work, unit-testable:
