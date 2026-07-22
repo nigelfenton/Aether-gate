@@ -16,6 +16,10 @@ on:
       - ".github/workflows/docker.yml"
   push:
     branches: [main]
+    # Cutting a vX.Y.Z tag publishes immutable version tags alongside the
+    # floating ones, so a deployment can pin an image instead of silently
+    # following main.
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
   workflow_dispatch:
 
 env:
@@ -132,26 +136,53 @@ jobs:
 
       # Actions expressions have no lowercase function, so do it in the shell.
       # `${VAR,,}` is a bash lowercase expansion; the default shell here is bash.
+      # PUBLISH is decided once here so the login and build steps cannot drift.
       - name: Resolve the image name (must be lowercase for OCI)
-        run: echo "IMAGE=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+        run: |
+          echo "IMAGE=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "PUBLISH=${{ github.repository_owner == 'nigelfenton' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}" >> "$GITHUB_ENV"
 
-      # Publishing arms itself only on the upstream repo's main branch, so this
-      # workflow is safe to run anywhere. Nothing here needs a secret until then.
+      # What each ref publishes (both targets share one image name, so a version
+      # is always prefixed with its target -- otherwise `full` would overwrite
+      # `lan`'s :1.2.3):
+      #
+      #   push to main   -> :lan            :full             floating
+      #   tag v1.2.3     -> :lan-1.2.3      :full-1.2.3       immutable, pin this
+      #                     :lan-1.2        :full-1.2         moves with patches
+      #                     :lan            :full             also refreshed
+      #   tag v1.2.3-rc1 -> :lan-1.2.3-rc1                    prerelease only
+      #
+      # A prerelease deliberately does NOT move :lan or :lan-1.2.
+      - name: Derive the image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=${{ matrix.target }},enable=${{ github.ref == 'refs/heads/main' || (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')) }}
+            type=semver,pattern={{version}},prefix=${{ matrix.target }}-
+            type=semver,pattern={{major}}.{{minor}},prefix=${{ matrix.target }}-
+
+      # Publishing arms itself only on the upstream repo's main branch or a
+      # version tag, so this workflow is safe to run anywhere (a fork builds and
+      # verifies but never publishes). Nothing needs a secret until then.
       - name: Log in to GHCR
-        if: github.repository_owner == 'nigelfenton' && github.ref == 'refs/heads/main'
+        if: env.PUBLISH == 'true'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build (and publish only from upstream main)
+      - name: Build (and publish only from upstream main or a version tag)
         uses: docker/build-push-action@v6
         with:
           context: .
           target: ${{ matrix.target }}
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.repository_owner == 'nigelfenton' && github.ref == 'refs/heads/main' }}
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ matrix.target }}
+          push: ${{ env.PUBLISH == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.target }}
           cache-to: type=gha,mode=max,scope=${{ matrix.target }}
