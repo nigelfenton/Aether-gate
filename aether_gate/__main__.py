@@ -12,6 +12,7 @@ The core threads (discovery, UDP prime, control TCP serve) are wired exactly as
 flex-sim wires them; only the signal source is swapped for the adapter.
 """
 import argparse
+import os
 import signal
 import threading
 import time
@@ -20,6 +21,40 @@ from .core.engine import (Radio, BINS, FPS, SIGNAL_WIDTH_KHZ, DEFAULT_PORT,
                            DISCOVERY_PORT, local_ip, log, start_control_server)
 from .adapters import get_adapter, available
 from .adapters.icom.radios import get as get_icom, lan_radios
+
+
+def apply_env_defaults(ap, environ=None):
+    """Let every flag also be supplied as AETHER_GATE_<DEST>.
+
+    --radio-ip -> AETHER_GATE_RADIO_IP, --rx-only -> AETHER_GATE_RX_ONLY=1.
+    Precedence is CLI > env > built-in default: an explicit flag always wins, so
+    nothing that works today changes behaviour.
+
+    Generic on purpose -- a new add_argument() gets an env var for free, with no
+    mapping table to drift out of sync with the flags.
+
+    NOTE the name follows argparse DEST, not the flag spelling: the --pass flag
+    is dest="pw", so its variable is AETHER_GATE_PW.
+
+    Why: a container or a systemd unit can configure the gate without a
+    hand-edited command line -- and without a password sitting on one.
+    """
+    env = os.environ if environ is None else environ
+    truthy = lambda v: v.strip().lower() not in ("", "0", "false", "no", "off")
+    for act in ap._actions:
+        if not act.option_strings:
+            continue                                   # positionals have no env form
+        val = env.get("AETHER_GATE_" + act.dest.upper())
+        if val is None:
+            continue
+        if isinstance(act, argparse._StoreTrueAction):
+            act.default = truthy(val)
+        elif isinstance(act, argparse._StoreFalseAction):
+            act.default = not truthy(val)
+        else:
+            act.default = val          # argparse applies type= to a string default
+        act.required = False
+    return ap
 
 
 def build_adapter(name, args):
@@ -48,7 +83,8 @@ def build_adapter(name, args):
                 local_ip=args.radio_local_ip, radio_port=args.radio_port,
                 civ_addr=int(str(args.civ_addr), 16), icom_model=row.model, model=model,
                 serial=serial, station=station,
-                usb_civ_port=args.usb_civ_port, usb_civ_baud=args.usb_civ_baud)
+                usb_civ_port=args.usb_civ_port, usb_civ_baud=args.usb_civ_baud,
+                rx_only=args.rx_only)
         a.lan_mod_min = args.lan_mod_min       # auto-fix LAN MOD Level on connect
         return a
     if name == "icom7300":
@@ -173,6 +209,12 @@ def main(argv=None):
                     help="advertise tx_capable=True to AE for a CAT rig (kenwood/yaesu). OFF by "
                          "default: no PTT is wired yet, so this only makes AE OFFER TX — it does "
                          "NOT key the radio. Do not enable until a tested PTT seam exists.")
+    ap.add_argument("--rx-only", action="store_true",
+                    help="hard-disable transmit: refuse PTT at the CI-V layer, no-op arm_tx, "
+                         "and advertise tx_capable=False so AE greys its TX button. For an "
+                         "unattended / permanent gateway. Env: AETHER_GATE_RX_ONLY=1")
+
+    apply_env_defaults(ap)
     args = ap.parse_args(argv)
 
     if args.adapter == "icom9700" and not (args.radio_ip and args.user and args.pw):
