@@ -32,6 +32,9 @@ from . import hpsdr_proto as hp
 SPEED_HZ = {0: 48_000, 1: 96_000, 2: 192_000, 3: 384_000}
 HZ_SPEED = {v: k for k, v in SPEED_HZ.items()}
 AUDIO_RATE = 24_000          # AE remote_audio_rx rate (must match core AUDIO_RATE)
+MAX_AUDIO_BLOCKS = 3         # cap the demod input backlog (3 * 4096/48k ≈ 256 ms)
+                             # so audio tracks live RX instead of riding the deque
+                             # cap as multi-second latency (issue #33).
 CC_INTERVAL_S = 0.05         # EP2 C&C round-robin period (20 Hz) — see _cc_loop.
                              # Decoupled from EP6 because the radio free-runs the
                              # IQ stream; sends have no reason to pace reads.
@@ -464,6 +467,15 @@ class HpsdrAdapter(RadioAdapter):
             self.set_slice(slice_hz)
         if mode is not None:
             self._mode = mode.upper()
+
+        # Bound audio latency. The EP6 reader fills _audio_q continuously, but AE
+        # drains it only as fast as it pulls samples. Left alone the deque rides
+        # near its cap (64 blocks * 4096/48k ≈ 5.5 s) and that whole backlog is
+        # heard as delay — the reported ~4 s late audio (issue #33). Before
+        # draining, drop all but the most recent MAX_AUDIO_BLOCKS so playback
+        # tracks live RX; this self-heals after any stall instead of accumulating.
+        while len(self._audio_q) > MAX_AUDIO_BLOCKS:
+            self._audio_q.popleft()
 
         need_in = n_samples * self._decim
         while len(self._iq_resid) < need_in and self._audio_q:
