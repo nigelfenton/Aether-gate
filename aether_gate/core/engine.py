@@ -1053,6 +1053,12 @@ class Radio:
             log(f"[tcp] AE connected from {addr}")
             self.conn = conn
             self.ae_peer_ip = addr[0]; self.vita_dest = None
+            # Re-seed the adapter's NCO from AE's freq on THIS connection, so a
+            # reconnect that lands on the gate's current centre still forces a
+            # retune instead of coming up deaf (issue #31). Adapters without the
+            # flag (sim/most) simply don't have it — guard with hasattr.
+            if self.adapter is not None and hasattr(self.adapter, "_seeded"):
+                self.adapter._seeded = False
             # AUTO-ARM TX on connect (per Nigel: arm defaults on). key_tx() still
             # enforces the TX-band whitelist (2m/70cm; 23cm refused) + the 10 s
             # watchdog, so "armed" only lifts the latch — it does NOT key anything
@@ -2216,8 +2222,13 @@ class Radio:
                         it = intens if live else floor_int
                         s.sendto(fft_packet(pid, fseq & 0xF, px, fi), dest); fseq += 1
                         s.sendto(wf_packet(pan["wf_id"], wseq & 0xF, it, low_hz, binbw_hz, tc, auto_black=wf_ab), dest); wseq += 1
+                    # Per-slice S-meter. A live adapter measures a real level
+                    # (m.s_meter_dbm); use it so AE's S-meter tracks actual signal.
+                    # Only the sim/pattern engine has no adapter meter -> fall back
+                    # to the synthesised level at the pan centre (issue #30).
+                    smeter_dbm = m.s_meter_dbm if m is not None else levels[ctx.center]
                     for g in list(self.slices):                     # per-slice S-meter (level at slice = pan centre)
-                        s.sendto(meter_packet(self.meter_sid, mseq & 0xF, SLICE_METER_BASE + g, levels[ctx.center]), dest); mseq += 1
+                        s.sendto(meter_packet(self.meter_sid, mseq & 0xF, SLICE_METER_BASE + g, smeter_dbm), dest); mseq += 1
                 except OSError as e:
                     log("[stream] send error:", e); break
                 fi += 1
