@@ -70,6 +70,11 @@ class HpsdrAdapter(RadioAdapter):
         self._latest = None                # most recent complex block for the panadapter FFT
         self._ep2_seq = 0
         self._retune_to = None             # pending centre change (applied in _cc_loop)
+        self._seeded = False               # first get_iq() after (re)connect seeds the NCO
+                                           # from AE's freq even if it matches self.center_hz
+                                           # — otherwise a reconnect on the default freq leaves
+                                           # the NCO on its startup centre and RX is deaf until
+                                           # the user nudges the VFO (issue #31).
         self._gain_dirty = False           # AE moved the RF-gain slider (rebuild gain reg)
         self._sender = None                # EP2 C&C thread (decoupled from EP6)
         self._resettle = False             # _cc_loop -> reader: retuned, drop partial IQ
@@ -410,7 +415,15 @@ class HpsdrAdapter(RadioAdapter):
 
     # --- the IQ source --------------------------------------------------
     def get_iq(self, n, center_hz, span_hz):
-        if abs(center_hz - self.center_hz) > 1.0 and self._retune_to is None:
+        # Seed the NCO from AE's freq on the first call after a (re)connect, even
+        # when it equals self.center_hz. Without this, reconnecting while AE is on
+        # the gate's default centre skips the retune below (the freqs match) and
+        # the NCO never moves off its startup freq -> deaf RX until a manual nudge
+        # (issue #31). The plain >1 Hz guard still handles all later tuning.
+        if not self._seeded and self._retune_to is None:
+            self._seeded = True
+            self._retune_to = float(center_hz)
+        elif abs(center_hz - self.center_hz) > 1.0 and self._retune_to is None:
             self._retune_to = float(center_hz)
         with self._lock:
             return self._latest            # core/fft.iq_to_dbm resamples to n bins
