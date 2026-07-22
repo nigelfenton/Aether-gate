@@ -114,11 +114,72 @@ def test_watchdog_force_unkeys():
     print("ok  tx: watchdog force-unkeys after the hard cap")
 
 
+# --- --rx-only (hard transmit disable) ---------------------------------------
+# The engine AUTO-ARMS on every AE connect, so for an unattended gateway the arm
+# itself has to be refused -- not just the key.
+
+def test_rx_only_latch_survives_new():
+    """REGRESSION GUARD, and the reason _rx_only is a CLASS attribute.
+
+    _adapter() builds the adapter with __new__, so __init__ never runs. Were
+    _rx_only instance-only it would simply be ABSENT here -- and a defensive
+    getattr(self, "_rx_only", False) would read False, so every rx-only test
+    below would pass while exercising nothing at all. Pin the class attribute."""
+    from aether_gate.adapters.icom9700 import Icom9700Adapter, _Ic9700Stream
+    assert "_rx_only" in vars(Icom9700Adapter), "_rx_only must be a CLASS attribute"
+    assert "rx_only" in vars(_Ic9700Stream), "rx_only must be a CLASS attribute"
+    a = _adapter()
+    assert a._rx_only is False               # resolves with no __init__
+    print("ok  rx-only: latch resolves on a __new__-built adapter (class attr)")
+
+
+def test_rx_only_refuses_arm_and_key():
+    a = _adapter(145_140_000)                # 2m -- would otherwise be legal
+    a._rx_only = True
+    a.arm_tx()                               # the engine's auto-arm-on-connect
+    assert a._tx_armed is False, "rx-only must swallow the auto-arm"
+    assert a.key_tx() is False
+    assert a._civ.ptt == [], "nothing may reach the rig under rx-only"
+    assert a._tx_keyed is False
+    print("ok  rx-only: auto-arm no-ops, key_tx refuses, no CI-V sent")
+
+
+def test_rx_only_blocks_ptt_at_the_civ_layer():
+    """THE load-bearing guard. _ptt_raw is the only place PTT goes on the wire,
+    and the engine DISCARDS key_tx()'s return value -- so a refusal further up
+    cannot be relied on by itself. Unkey must still always be allowed: a latched
+    transmitter has to be able to drop no matter what the flags say."""
+    from aether_gate.adapters.icom9700 import _Ic9700Stream
+    civ = _Ic9700Stream.__new__(_Ic9700Stream)
+    sent = []
+    civ._send_civ = lambda payload: sent.append(bytes(payload))
+    assert civ.rx_only is False               # class default resolves
+    civ.rx_only = True
+    civ._ptt_raw(True)
+    assert sent == [], "rx-only must not put a key-down on the wire"
+    civ._ptt_raw(False)
+    assert sent == [bytes([0x1C, 0x00, 0x00])], "unkey must NEVER be blocked"
+    print("ok  rx-only: _ptt_raw blocks key-down, still allows unkey")
+
+
+def test_rx_only_advertises_tx_capable_false():
+    """AE greys its TX button off tx_capable, so an rx-only gate should not
+    offer a control whose PTT it will refuse. Default must stay unchanged."""
+    from aether_gate.adapters.icom9700 import Icom9700Adapter
+    kw = dict(radio_ip="192.0.2.1", username="u", password="p")
+    assert Icom9700Adapter(rx_only=True, **kw).capabilities.tx_capable is False
+    assert Icom9700Adapter(**kw).capabilities.tx_capable is True
+    print("ok  rx-only: tx_capable False; default unchanged (still True)")
+
+
 def main():
     tests = [test_disarmed_refuses_to_key, test_armed_in_band_keys,
              test_out_of_band_refuses_even_when_armed, test_70cm_in_band,
              test_23cm_tx_is_refused, test_no_civ_session_refuses,
-             test_disarm_force_unkeys, test_watchdog_force_unkeys]
+             test_disarm_force_unkeys, test_watchdog_force_unkeys,
+             test_rx_only_latch_survives_new, test_rx_only_refuses_arm_and_key,
+             test_rx_only_blocks_ptt_at_the_civ_layer,
+             test_rx_only_advertises_tx_capable_false]
     for t in tests:
         try:
             t()

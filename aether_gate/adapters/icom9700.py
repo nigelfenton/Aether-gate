@@ -124,6 +124,10 @@ def _resample(src, n):
 class _Ic9700Stream(Ic9700Civ):
     """One CI-V stream doing BOTH scope (inherited) and control (added here)."""
 
+    # Set by Icom9700Adapter when --rx-only is in force. Class-level default so
+    # the attribute always resolves, including on instances a test builds by hand.
+    rx_only = False
+
     def __init__(self, *a, **k):
         super().__init__(*a, **k)
         self.on_data = self._dispatch
@@ -439,6 +443,16 @@ class _Ic9700Stream(Ic9700Civ):
     # directly from outside the adapter's guarded path.
     def _ptt_raw(self, on):
         """CI-V 1C 00 <01|00>: key (on=True) / unkey the transmitter."""
+        if on and self.rx_only:
+            # THE load-bearing rx-only guard: this is the only place the gate
+            # asserts PTT on the wire, so it is the only refusal that cannot be
+            # routed around. The checks in arm_tx/key_tx are layered on top for
+            # a clear log and an honest capability advert -- but key_tx returns a
+            # value the engine DISCARDS, so a refusal higher up cannot be relied
+            # on by itself. UNKEY is never blocked: a latched transmitter must
+            # always be able to drop, whatever the flags say.
+            print("[tx] REFUSED: --rx-only is in force (no PTT asserted)", flush=True)
+            return
         self._send_civ(bytes([0x1C, 0x00, 0x01 if on else 0x00]))
 
 
@@ -447,14 +461,23 @@ class Icom9700Adapter(RadioAdapter):
 
     provides = "spectrum"
 
+    # RX-ONLY LATCH -- a CLASS attribute deliberately. The TX safety suite builds
+    # adapters with Icom9700Adapter.__new__(Icom9700Adapter), which never runs
+    # __init__; an instance-only attribute would simply not exist there, and a
+    # defensive getattr(..., False) would read False and leave the whole rx-only
+    # suite green while exercising nothing. __init__ overrides it per instance.
+    _rx_only = False
+
     def __init__(self, radio_ip, username, password, local_ip=None,
                  radio_port=50001, civ_addr=0xA2, icom_model="IC-9700",
                  model="FLEX-6700",
                  serial="GATE9700", station="Icom-IC-9700",
-                 usb_civ_port=None, usb_civ_baud=115200):
+                 usb_civ_port=None, usb_civ_baud=115200, rx_only=False):
         # FLEX-6700 is the only Flex model that covers 2m (~135-165 MHz), so AE will
         # offer the IC-9700's 2m band. (6300/6400/6600 = HF+6m only.) 70cm/23cm still
         # need frequency translation - no Flex covers them.
+        # Set before capabilities are built below -- tx_capable reads it.
+        self._rx_only = bool(rx_only)
         self.radio_ip = radio_ip
         self.username = username
         self.password = password
@@ -494,8 +517,10 @@ class Icom9700Adapter(RadioAdapter):
         # a drain thread streams AE's dax_tx modem audio to the rig's RS-BA1 TX
         # audio session (txenable=1), so the carrier is MODULATED (AX.25/RADE),
         # not bare — see _tx_audio_loop + Ic9700Audio.send_audio.
+        # Under --rx-only advertise tx_capable=False so AE greys its TX button
+        # rather than offering a control whose PTT we will refuse anyway.
         self.capabilities = AdapterCaps(model=model, serial=serial, station=station,
-                                        tx_capable=True,
+                                        tx_capable=not self._rx_only,
                                         min_span_hz=5_000.0, max_span_hz=1_000_000.0,
                                         bands=_bands)
         self._handler = None
@@ -560,6 +585,7 @@ class Icom9700Adapter(RadioAdapter):
                                f"(authed={self._handler.authenticated.is_set()})")
         self._civ = _Ic9700Stream(lip, self.radio_ip, self._handler.civ_port,
                                   self._handler._civ_sock, civ_addr=self.civ_addr)
+        self._civ.rx_only = self._rx_only
         self._civ.start()
         # The CIV bring-up can race the stream handshake, and a glitched
         # session start can poison the tracked-seq layer: the radio then
@@ -865,6 +891,11 @@ class Icom9700Adapter(RadioAdapter):
     def arm_tx(self):
         """Explicitly enable TX. Until this is called, key_tx() is a no-op that
         refuses. Arming does NOT key the rig — it only lifts the safety latch."""
+        if self._rx_only:
+            # The engine auto-arms on every AE connect, so this is the arm that
+            # actually has to be refused for an unattended gateway.
+            print("[tx] arm ignored: --rx-only is in force", flush=True)
+            return
         self._tx_armed = True
         print("[tx] ARMED (key_tx now permitted; watchdog "
               f"{self.TX_MAX_KEY_S:.0f}s)", flush=True)
@@ -918,6 +949,9 @@ class Icom9700Adapter(RadioAdapter):
         force=True skips ONLY the bare-carrier guard (for a deliberate carrier,
         e.g. tuning). It does NOT bypass arm, band-check or the watchdog."""
         with self._tx_lock:
+            if self._rx_only:
+                print("[tx] REFUSED: --rx-only is in force", flush=True)
+                return False
             if not self._tx_armed:
                 print("[tx] REFUSED: not armed (call arm_tx first)", flush=True)
                 return False
