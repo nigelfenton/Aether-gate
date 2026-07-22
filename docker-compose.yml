@@ -29,7 +29,7 @@ services:
       AETHER_GATE_RADIO_IP: 10.0.0.96          # <-- your radio
       AETHER_GATE_IP: 10.0.0.31                # <-- this host, the address AE should reach
       AETHER_GATE_SERIAL: GATE9700
-      AETHER_GATE_STATION: Icom IC-9700
+      AETHER_GATE_STATION: Icom-IC-9700
       AETHER_GATE_PORT: "4992"
       AETHER_GATE_CTL_PORT: "8731"
       AETHER_GATE_RX_ONLY: "1"                 # recommended for an unattended gate
@@ -60,7 +60,7 @@ services:
       AETHER_GATE_RADIO_IP: 10.0.0.97           # <-- your radio
       AETHER_GATE_IP: 10.0.0.31                 # <-- this host
       AETHER_GATE_SERIAL: GATE0705              # distinct, or AE's chooser collides
-      AETHER_GATE_STATION: Icom IC-705
+      AETHER_GATE_STATION: Icom-IC-705
       AETHER_GATE_PORT: "5992"                  # distinct from the other gate
       AETHER_GATE_CTL_PORT: "8732"
       AETHER_GATE_RX_ONLY: "1"

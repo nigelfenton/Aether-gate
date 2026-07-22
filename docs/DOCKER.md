@@ -151,6 +151,13 @@ its TX button instead of offering a control the gate would refuse.
 | Second container exits or logs a bind error | duplicate `AETHER_GATE_PORT` / `AETHER_GATE_CTL_PORT` |
 | Login refused after an unclean stop | phantom RS-BA1 session — see *Stopping cleanly* |
 | `unknown --icom-model` | not a LAN Icom; `--help` lists the known rows |
+| Chooser shows `Icom` instead of `Icom IC-705` | **the station name contains a space** — see below |
+
+> **Avoid spaces in `AETHER_GATE_STATION`.** The discovery advertisement is a flat list
+> of space-delimited `key=value` pairs, so a station of `Icom IC-705` is read as
+> `nickname=Icom` with `IC-705` left as an orphan token — AE then labels the radio just
+> `Icom`. Use a hyphen (`Icom-IC-705`), which is what the gate's own default
+> (`Icom-<model>`) and the systemd units already do.
 
 The control panel (`AETHER_GATE_CTL_PORT`, default `8731`) shows what the gate sees from
 the radio and is the first place to look. `docker compose logs -f` shows the rest.
