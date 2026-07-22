@@ -20,7 +20,11 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ${{ github.repository }}
+  # NB: deliberately NOT `github.repository` — that is `nigelfenton/Aether-gate`,
+  # and an OCI repository name must be lowercase, so buildx rejects the tag before
+  # it builds anything. The build job lowercases it at runtime (see "Resolve the
+  # image name"); GHCR paths are case-insensitive on pull, so consumers are
+  # unaffected.
 
 jobs:
   # The lan target is quick, so it gets built natively and actually RUN.
@@ -118,6 +122,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
+
+      # Actions expressions have no lowercase function, so do it in the shell.
+      # `${VAR,,}` is a bash lowercase expansion; the default shell here is bash.
+      - name: Resolve the image name (must be lowercase for OCI)
+        run: echo "IMAGE=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
 
       # Publishing arms itself only on the upstream repo's main branch, so this
       # workflow is safe to run anywhere. Nothing here needs a secret until then.
