@@ -32,6 +32,9 @@ from . import hpsdr_proto as hp
 SPEED_HZ = {0: 48_000, 1: 96_000, 2: 192_000, 3: 384_000}
 HZ_SPEED = {v: k for k, v in SPEED_HZ.items()}
 AUDIO_RATE = 24_000          # AE remote_audio_rx rate (must match core AUDIO_RATE)
+MAX_AUDIO_BLOCKS = 3         # cap the demod input backlog (3 * 4096/48k ≈ 256 ms)
+                             # so audio tracks live RX instead of riding the deque
+                             # cap as multi-second latency (issue #33).
 CC_INTERVAL_S = 0.05         # EP2 C&C round-robin period (20 Hz) — see _cc_loop.
                              # Decoupled from EP6 because the radio free-runs the
                              # IQ stream; sends have no reason to pace reads.
@@ -70,6 +73,11 @@ class HpsdrAdapter(RadioAdapter):
         self._latest = None                # most recent complex block for the panadapter FFT
         self._ep2_seq = 0
         self._retune_to = None             # pending centre change (applied in _cc_loop)
+        self._seeded = False               # first get_iq() after (re)connect seeds the NCO
+                                           # from AE's freq even if it matches self.center_hz
+                                           # — otherwise a reconnect on the default freq leaves
+                                           # the NCO on its startup centre and RX is deaf until
+                                           # the user nudges the VFO (issue #31).
         self._gain_dirty = False           # AE moved the RF-gain slider (rebuild gain reg)
         self._sender = None                # EP2 C&C thread (decoupled from EP6)
         self._resettle = False             # _cc_loop -> reader: retuned, drop partial IQ
@@ -410,7 +418,15 @@ class HpsdrAdapter(RadioAdapter):
 
     # --- the IQ source --------------------------------------------------
     def get_iq(self, n, center_hz, span_hz):
-        if abs(center_hz - self.center_hz) > 1.0 and self._retune_to is None:
+        # Seed the NCO from AE's freq on the first call after a (re)connect, even
+        # when it equals self.center_hz. Without this, reconnecting while AE is on
+        # the gate's default centre skips the retune below (the freqs match) and
+        # the NCO never moves off its startup freq -> deaf RX until a manual nudge
+        # (issue #31). The plain >1 Hz guard still handles all later tuning.
+        if not self._seeded and self._retune_to is None:
+            self._seeded = True
+            self._retune_to = float(center_hz)
+        elif abs(center_hz - self.center_hz) > 1.0 and self._retune_to is None:
             self._retune_to = float(center_hz)
         with self._lock:
             return self._latest            # core/fft.iq_to_dbm resamples to n bins
@@ -451,6 +467,15 @@ class HpsdrAdapter(RadioAdapter):
             self.set_slice(slice_hz)
         if mode is not None:
             self._mode = mode.upper()
+
+        # Bound audio latency. The EP6 reader fills _audio_q continuously, but AE
+        # drains it only as fast as it pulls samples. Left alone the deque rides
+        # near its cap (64 blocks * 4096/48k ≈ 5.5 s) and that whole backlog is
+        # heard as delay — the reported ~4 s late audio (issue #33). Before
+        # draining, drop all but the most recent MAX_AUDIO_BLOCKS so playback
+        # tracks live RX; this self-heals after any stall instead of accumulating.
+        while len(self._audio_q) > MAX_AUDIO_BLOCKS:
+            self._audio_q.popleft()
 
         need_in = n_samples * self._decim
         while len(self._iq_resid) < need_in and self._audio_q:
