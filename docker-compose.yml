@@ -1,0 +1,74 @@
+# Aether-gate — two Icom LAN radios on one host, each its own gate.
+# Copyright (C) 2026 Nigel Fenton (G0JKN). GPL-3.0-or-later.
+#
+#   cp gate.env.example gate.env && chmod 600 gate.env   # put the RS-BA1 login in it
+#   $EDITOR docker-compose.yml                           # set the radio IPs + AETHER_GATE_IP
+#   docker compose up -d --build
+#
+# One container per radio. Each MUST have its own AETHER_GATE_SERIAL (AE keys its
+# chooser on the serial, so two gates sharing one would collide), its own
+# AETHER_GATE_PORT, and its own AETHER_GATE_CTL_PORT.
+#
+# Full notes, and why host networking is mandatory: docs/DOCKER.md
+
+services:
+  ic9700:
+    build:
+      context: .
+      target: lan               # numpy only; use `full` for CAT rigs or a dongle
+    image: aether-gate:lan
+    container_name: aether-gate-ic9700
+    network_mode: host          # REQUIRED -- broadcast discovery + VITA-49. See docs/DOCKER.md
+    restart: on-failure
+    stop_grace_period: 10s      # SIGTERM -> adapter.close() -> RS-BA1 0x05 disconnect
+    env_file:
+      - gate.env                # RS-BA1 login only (0600, gitignored)
+    environment:
+      AETHER_GATE_ADAPTER: icom9700
+      AETHER_GATE_ICOM_MODEL: IC-9700
+      AETHER_GATE_RADIO_IP: 10.0.0.96          # <-- your radio
+      AETHER_GATE_IP: 10.0.0.31                # <-- this host, the address AE should reach
+      AETHER_GATE_SERIAL: GATE9700
+      AETHER_GATE_STATION: Icom IC-9700
+      AETHER_GATE_PORT: "4992"
+      AETHER_GATE_CTL_PORT: "8731"
+      AETHER_GATE_RX_ONLY: "1"                 # recommended for an unattended gate
+      AETHER_GATE_NO_UPDATE_CHECK: "1"
+    healthcheck:
+      # the control panel answering is the honest liveness signal
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8731/',timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  ic705:
+    build:
+      context: .
+      target: lan
+    image: aether-gate:lan
+    container_name: aether-gate-ic705
+    network_mode: host
+    restart: on-failure
+    stop_grace_period: 10s
+    env_file:
+      - gate.env
+    environment:
+      AETHER_GATE_ADAPTER: icom9700             # "icom9700" is the Icom LAN transport,
+      AETHER_GATE_ICOM_MODEL: IC-705            # the model comes from here
+      AETHER_GATE_RADIO_IP: 10.0.0.97           # <-- your radio
+      AETHER_GATE_IP: 10.0.0.31                 # <-- this host
+      AETHER_GATE_SERIAL: GATE0705              # distinct, or AE's chooser collides
+      AETHER_GATE_STATION: Icom IC-705
+      AETHER_GATE_PORT: "5992"                  # distinct from the other gate
+      AETHER_GATE_CTL_PORT: "8732"
+      AETHER_GATE_RX_ONLY: "1"
+      AETHER_GATE_NO_UPDATE_CHECK: "1"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8732/',timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

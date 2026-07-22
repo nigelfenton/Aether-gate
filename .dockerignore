@@ -1,0 +1,21 @@
+# Keep the build context small and secret-free.
+.git
+.gitignore
+attic/
+reference/
+docs/images/
+screenshots/
+**/dev/
+*.pcap
+*.pcapng
+*.png
+*.jpg
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.venv/
+venv/
+# never let a populated env file reach the image
+gate.env
+*.env
+!gate.env.example

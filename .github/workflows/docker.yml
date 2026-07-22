@@ -1,0 +1,141 @@
+# Aether-gate — build the container images, and smoke-test one.
+#
+# Builds both targets for amd64 + arm64 on every PR so the Dockerfile cannot
+# rot. Publishing is OFF by default and needs no secrets: the push step only
+# arms itself on the upstream repository's main branch, so a fork (where this
+# will also run) builds and verifies but never publishes.
+name: docker
+
+on:
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "docker-compose.yml"
+      - "aether_gate/**"
+      - ".github/workflows/docker.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ${{ github.repository }}
+
+jobs:
+  # The lan target is quick, so it gets built natively and actually RUN.
+  smoke:
+    name: build lan + smoke-test (sim adapter, no hardware)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build lan image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: lan
+          load: true
+          tags: aether-gate:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The sim adapter needs no radio, so CI can prove the container actually
+      # works rather than merely that it builds: it must advertise itself on the
+      # discovery socket and answer on its control panel.
+      - name: Smoke-test (discovery + control panel + rx-only)
+        run: |
+          set -eux
+          docker run -d --name gate --network host \
+            -e AETHER_GATE_ADAPTER=sim \
+            -e AETHER_GATE_CTL_PORT=8731 \
+            -e AETHER_GATE_NO_UPDATE_CHECK=1 \
+            -e AETHER_GATE_RX_ONLY=1 \
+            -e AETHER_GATE_SERIAL=CISMOKE01 \
+            aether-gate:ci
+          # give it a moment to bind and start advertising
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8731/ >/dev/null 2>&1 && break
+            sleep 1
+          done
+          echo "--- control panel answers ---"
+          curl -fsS http://127.0.0.1:8731/ >/dev/null
+
+          echo "--- a discovery broadcast arrives on :4992 ---"
+          timeout 10 python3 - <<'PY'
+          import socket
+          s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+          s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+          s.bind(("", 4992)); s.settimeout(8)
+          import time
+          deadline = time.time() + 8
+          data = b""
+          while time.time() < deadline:
+              try:
+                  data, addr = s.recvfrom(2048)
+              except socket.timeout:
+                  break
+              if b"CISMOKE01" in data:
+                  break
+          text = data.decode("utf-8", "replace")
+          print("discovery:", text[:200])
+          # Match OUR serial specifically: any real FlexRadio on the same LAN
+          # also advertises here, so a generic "serial=" check would pass even
+          # if the container never started.
+          assert "serial=CISMOKE01" in text, text
+          PY
+
+          echo "--- rx-only is reported ---"
+          docker logs gate 2>&1 | tail -20
+
+      - name: Container stops gracefully (SIGTERM reaches PID 1)
+        run: |
+          set -eux
+          # exec-form ENTRYPOINT means python is PID 1; a shell-form regression
+          # would swallow SIGTERM and force docker to SIGKILL after the timeout.
+          start=$(date +%s)
+          docker stop -t 10 gate
+          took=$(( $(date +%s) - start ))
+          echo "stop took ${took}s"
+          test "$took" -lt 10
+          test "$(docker inspect -f '{{.State.ExitCode}}' gate)" != "137"
+
+      - name: Logs on failure
+        if: failure()
+        run: docker logs gate || true
+
+  build:
+    name: build ${{ matrix.target }} (amd64 + arm64)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [lan, full]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # Publishing arms itself only on the upstream repo's main branch, so this
+      # workflow is safe to run anywhere. Nothing here needs a secret until then.
+      - name: Log in to GHCR
+        if: github.repository_owner == 'nigelfenton' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build (and publish only from upstream main)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.repository_owner == 'nigelfenton' && github.ref == 'refs/heads/main' }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ matrix.target }}
+          cache-from: type=gha,scope=${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
