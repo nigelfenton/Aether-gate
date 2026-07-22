@@ -28,6 +28,7 @@ from .icom.handler import Ic9700Handler
 from .icom.civ import Ic9700Civ, CONTROLLER_CIV
 from .icom.audio import Ic9700Audio, RADIO_RATE
 from .icom.radios import _2M, _70CM, _23CM
+from .icom.radios import get as get_icom
 
 MODE_TO_CIV = {"LSB": 0x00, "USB": 0x01, "AM": 0x02, "CW": 0x03, "RTTY": 0x04,
                "FM": 0x05, "CW-R": 0x06, "RTTY-R": 0x07, "DV": 0x08, "FM-N": 0x12}
@@ -447,7 +448,8 @@ class Icom9700Adapter(RadioAdapter):
     provides = "spectrum"
 
     def __init__(self, radio_ip, username, password, local_ip=None,
-                 radio_port=50001, civ_addr=0xA2, model="FLEX-6700",
+                 radio_port=50001, civ_addr=0xA2, icom_model="IC-9700",
+                 model="FLEX-6700",
                  serial="GATE9700", station="Icom-IC-9700",
                  usb_civ_port=None, usb_civ_baud=115200):
         # FLEX-6700 is the only Flex model that covers 2m (~135-165 MHz), so AE will
@@ -459,6 +461,24 @@ class Icom9700Adapter(RadioAdapter):
         self.local_ip = local_ip
         self.radio_port = radio_port
         self.civ_addr = civ_addr
+        # Which Icom this is. The LAN transport is model-agnostic (the radio's own
+        # capabilities packet names it), so everything model-specific comes from ONE
+        # radios.py row: retune coverage, the bands= AE advert, and the identity we
+        # report. Unknown model -> fall back to the 9700 so nothing regresses.
+        self._row = get_icom(icom_model)
+        if self._row is None:
+            print(f"[icom] unknown --icom-model {icom_model!r}; falling back to IC-9700",
+                  flush=True)
+            self._row = get_icom("IC-9700")
+        self.icom_model = self._row.model
+        if self._row.transport != "lan":
+            raise RuntimeError(
+                f"{self._row.model} is a {self._row.transport}-transport radio; this "
+                f"adapter is the RS-BA1 LAN path. Use --adapter icom7300 for USB CI-V.")
+        # retune() coverage comes from the row, so an HF rig is not silently clamped
+        # to the 9700's VHF/UHF set. TX_BANDS_MHZ is deliberately NOT derived -- see
+        # the note on that constant.
+        self.BAND_RANGES_MHZ = tuple((b.low_mhz, b.high_mhz) for b in self._row.bands)
         # IC-9700 covers 2m/70cm/23cm; RX-only here (no TX/PTT wired -> never keys the rig).
         # Span honesty: the 9700 scope does ±2.5k..±500k -> pan width 5 kHz..1 MHz;
         # don't let AE zoom the axis past what the scope can actually show.
@@ -466,7 +486,7 @@ class Icom9700Adapter(RadioAdapter):
         # vocabulary — _70CM declares "440"). With a radio-declared-bands AE the
         # menu offers exactly these three; older AE ignores the key and falls back
         # to the FLEX-6700's 2m.
-        _bands = tuple(b.name for b in (_2M + _70CM + _23CM))   # ("2m","440","23cm")
+        _bands = tuple(b.name for b in self._row.bands)   # 9700: ("2m","440","23cm")
         # tx_capable=True now that real guarded PTT is wired (key_tx: armed +
         # 2m/70cm only, 23cm refused, 10 s watchdog). This makes the engine
         # advertise tx=1 on the active slice so AE un-greys the TX button; MOX
@@ -718,6 +738,11 @@ class Icom9700Adapter(RadioAdapter):
     # sync snap AE back to where the rig actually is.
     BAND_RANGES_MHZ = ((144.0, 148.0), (420.0, 450.0), (1240.0, 1300.0))
 
+    # NOT derived from the radios.py row, deliberately. That table is documentation
+    # ("band edges here are indicative and region-neutral", and every row but the
+    # 9700 was verified=False when this was written) -- it is RX/coverage data with
+    # no TX field, so it cannot carry transmit authority. needs_xvtr also cannot
+    # separate TX-allowed 70cm from TX-forbidden 23cm: both are True.
     # TX-ALLOWED bands (key_tx checks THIS, not BAND_RANGES_MHZ). DELIBERATELY
     # EXCLUDES 23cm/1.2 GHz per Nigel's instruction — RX on 1.2 GHz is fine, but
     # the gate must REFUSE to key the transmitter there. A hard guard, not a
@@ -1433,7 +1458,7 @@ class Icom9700Adapter(RadioAdapter):
                 vfos.append({"name": "RX2 (SUB)", "freq_hz": civ.rx2_freq_hz,
                              "mode": civ.rx2_mode, "selected": False})
         return {
-            "radio": "IC-9700",
+            "radio": self.icom_model,
             "presented_as": self.capabilities.model,
             "link": {"transport": "Icom RS-BA1 / CI-V LAN",
                      "host": f"{self.radio_ip}:{self.radio_port}",

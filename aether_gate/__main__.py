@@ -19,6 +19,7 @@ import time
 from .core.engine import (Radio, BINS, FPS, SIGNAL_WIDTH_KHZ, DEFAULT_PORT,
                            DISCOVERY_PORT, local_ip, log, start_control_server)
 from .adapters import get_adapter, available
+from .adapters.icom.radios import get as get_icom, lan_radios
 
 
 def build_adapter(name, args):
@@ -35,14 +36,17 @@ def build_adapter(name, args):
                    direct_samp=args.direct_samp, agc=args.agc)
     if name == "icom9700":
         # give the 9700 a distinct identity unless the user overrode the shared defaults
-        serial = args.serial if args.serial != "GATE0001" else "GATE9700"
-        station = args.station if args.station != "aether-gate 1" else "Icom-IC-9700"
-        # FLEX-6700 is the only Flex with 2m — don't let the shared FLEX-6600
-        # default hide the 9700's home band in AE
-        model = args.model if args.model != "FLEX-6600" else "FLEX-6700"
+        row = get_icom(args.icom_model)
+        tag = row.model.replace("IC-", "").replace("-", "")
+        serial = args.serial if args.serial != "GATE0001" else f"GATE{tag}"
+        station = args.station if args.station != "aether-gate 1" else f"Icom-{row.model}"
+        # Advertise the Flex the ROW names: FLEX-6700 for a rig with 2m, FLEX-6600 for
+        # an HF+6m rig like the 7610 (blanket-bumping every LAN Icom to 6700 handed AE
+        # a phantom 2m band on HF-only radios).
+        model = args.model if args.model != "FLEX-6600" else row.advertise
         a = cls(radio_ip=args.radio_ip, username=args.user, password=args.pw,
                 local_ip=args.radio_local_ip, radio_port=args.radio_port,
-                civ_addr=int(str(args.civ_addr), 16), model=model,
+                civ_addr=int(str(args.civ_addr), 16), icom_model=row.model, model=model,
                 serial=serial, station=station,
                 usb_civ_port=args.usb_civ_port, usb_civ_baud=args.usb_civ_baud)
         a.lan_mod_min = args.lan_mod_min       # auto-fix LAN MOD Level on connect
@@ -144,6 +148,10 @@ def main(argv=None):
     ap.add_argument("--pass", dest="pw", default=None, help="icom9700 adapter: radio Network password")
     ap.add_argument("--radio-port", type=int, default=50001, help="icom9700 adapter: control port (default 50001)")
     ap.add_argument("--radio-local-ip", default=None, help="icom9700 adapter: local IP that reaches the radio (default: autodetect; set when the radio LAN differs from --ip, e.g. gate advertised on Tailscale but radio on the LAN)")
+    ap.add_argument("--icom-model", default="IC-9700",
+                    help="icom9700 adapter: which LAN Icom (%s). Drives band coverage, "
+                         "the bands= advert to AE, the advertised Flex model and the "
+                         "default CI-V address." % "/".join(lan_radios()))
     ap.add_argument("--civ-addr", default="A2", help="Icom adapter: radio CI-V address hex (default A2 for 9700; use 94 for 7300)")
     ap.add_argument("--usb-civ-port", default=None, help="Icom USB CI-V serial port (e.g. COM7 or /dev/ttyUSB0). Required for icom7300; optional RX2 helper for icom9700.")
     ap.add_argument("--usb-civ-baud", type=int, default=115200, help="Icom USB CI-V baud (default 115200)")
@@ -169,6 +177,14 @@ def main(argv=None):
 
     if args.adapter == "icom9700" and not (args.radio_ip and args.user and args.pw):
         ap.error("--adapter icom9700 requires --radio-ip, --user and --pass")
+    if args.adapter == "icom9700":
+        _row = get_icom(args.icom_model)
+        if _row is None:
+            ap.error(f"--icom-model {args.icom_model!r} is not a known LAN Icom "
+                     f"({', '.join(lan_radios())})")
+        # default the CI-V address from the model unless the user set one
+        if args.civ_addr == "A2":
+            args.civ_addr = f"{_row.civ_addr:02X}"
     if args.adapter == "icom7300":
         if not args.usb_civ_port:
             ap.error("--adapter icom7300 requires --usb-civ-port")

@@ -100,6 +100,7 @@ def _build_argv(cfg):
     elif ad == "icom9700":
         add("--radio-ip", "radio_ip"); add("--user", "user"); add("--pass", "password")
         add("--radio-local-ip", "radio_local_ip"); add("--civ-addr", "civ_addr")
+        add("--icom-model", "icom_model")
     elif ad == "icom7300":
         add("--usb-civ-port", "usb_civ_port"); add("--usb-civ-baud", "usb_civ_baud")
         add("--civ-addr", "civ_addr"); add("--usb-audio-device", "usb_audio_device")

@@ -64,7 +64,7 @@ _HF = [Band("160m", 1.8, 2.0), Band("80m", 3.5, 4.0), Band("60m", 5.25, 5.45),
        Band("10m", 28.0, 29.7)]
 _6M = [Band("6m", 50.0, 54.0)]
 _2M = [Band("2m", 144.0, 148.0)]                              # FLEX-6700 native
-_70CM = [Band("440", 430.0, 450.0, needs_xvtr=True)]         # via XVTR; wire name "440" = AE BandDefs vocab (AE has no "70cm")
+_70CM = [Band("440", 420.0, 450.0, needs_xvtr=True)]         # via XVTR; wire name "440" = AE BandDefs vocab (AE has no "70cm")
 _23CM = [Band("23cm", 1240.0, 1300.0, needs_xvtr=True)]      # via XVTR
 
 
@@ -79,8 +79,9 @@ REGISTRY = {
 
     "IC-705": IcomRadio(
         model="IC-705", civ_addr=0xA4, transport="lan", advertise="FLEX-6700",
-        bands=_HF + _6M + _2M + _70CM, has_scope=True, verified=False,
-        notes="LAN over WLAN (also USB). HF/6m/2m native-ish; 70cm via XVTR. VERIFY."),
+        bands=_HF + _6M + _2M + _70CM, has_scope=True, verified=True,
+        notes="VERIFIED 2026-07-21 on hardware (K6OZY lab): RS-BA1 over WLAN, civ 0xA4, "
+              "27h scope 30.0 fps / 475 bins, LAN RX audio, HF+2m tuned live from AE."),
 
     "IC-7610": IcomRadio(
         model="IC-7610", civ_addr=0x98, transport="lan", advertise="FLEX-6600",
