@@ -29,6 +29,22 @@ WorkingDirectory=/home/pi/gate
 Environment=PYTHONPATH=/home/pi/gate
 Environment=PYTHONUNBUFFERED=1
 
+# ALTERNATIVE: configure with environment variables instead of ExecStart flags.
+# Every flag has an AETHER_GATE_<OPTION> form (precedence: flag > env > default),
+# which keeps the radio password OUT of the command line -- ExecStart is visible
+# to every user via `systemctl show` and `ps`. Put the secrets in a 0600 file:
+#
+#   Environment=AETHER_GATE_ADAPTER=icom9700
+#   Environment=AETHER_GATE_RADIO_IP=10.0.0.7
+#   EnvironmentFile=/etc/aether-gate/9700.env     # 0600: AETHER_GATE_USER/_PW
+#
+# NOTE the name follows the option's destination: --pass is AETHER_GATE_PW.
+#
+# For an unattended box consider AETHER_GATE_RX_ONLY=1 (--rx-only): the engine
+# arms TX on every AE connect, so any AE client on the LAN can otherwise reach a
+# live PTT path. With it set the gate refuses PTT at the CI-V layer and tells AE
+# tx_capable=False, so the TX button is greyed rather than merely refused.
+
 # --- EDIT THESE: radio IP, credentials, and this host's LAN IP + AE's IP ---
 ExecStart=/usr/bin/python3 -m aether_gate \
     --adapter icom9700 \

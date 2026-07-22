@@ -161,6 +161,33 @@ python -m aether_gate --adapter kenwood --kw-model TS-450S \
 
 `python -m aether_gate --help` lists every option.
 
+### Configuration via environment
+
+Every flag also has an environment variable: `AETHER_GATE_` + the option name in
+upper case, underscores for dashes. Precedence is **CLI flag > environment >
+built-in default**, so an explicit flag always wins.
+
+```bash
+AETHER_GATE_ADAPTER=icom9700 \
+AETHER_GATE_RADIO_IP=10.0.0.7 \
+AETHER_GATE_USER=<net-user> \
+AETHER_GATE_PW=<net-pass> \
+AETHER_GATE_RX_ONLY=1 \
+python -m aether_gate
+```
+
+This is aimed at unattended hosts — a systemd unit or a container can be configured
+without a hand-edited command line, and **without a password sitting on one** (where
+it is visible to every user in `ps`).
+
+Two things worth knowing:
+
+- The name follows the option's *destination*, not always its spelling. `--pass` is
+  stored as `pw`, so it is **`AETHER_GATE_PW`** — not `AETHER_GATE_PASS`.
+- On/off flags accept `1/true/yes/on`; `0`, `false`, `no`, `off` and empty all mean
+  **off**, so `AETHER_GATE_RX_ONLY=0` leaves transmit alone rather than enabling the
+  lock.
+
 ---
 
 ## Run it on a Raspberry Pi (the appliance)
@@ -196,15 +223,25 @@ Writing an adapter is small: subclass `aether_gate.adapters.base.RadioAdapter`, 
 the reference and [DESIGN.md](DESIGN.md) / [RADIO_SUPPORT.md](RADIO_SUPPORT.md) for
 the architecture.
 
-**Why there's no transmit.** When AE keys TX it sends a `transmit set mox=1` command.
-The engine's handler records the state and echoes an interlock/MOX status back to AE
-(so AE's UI shows "transmitting"), but there is **no adapter-TX seam** — it never calls
-down to the radio to assert PTT. The hamlib backend *has* a working `set_ptt` (`T 1/0`)
-and the Icom LAN path *could* send CI-V `1C 00`, but nothing invokes them from the
-transmit handler yet. So keying is cosmetic end-to-end and no RF leaves the rig. Wiring
-this up (PTT seam + a default-off arm flag + TX-band limiting + a TX-audio route) is the
-next planned milestone; it's kept deliberately unwired until that safety scaffolding
-exists, because a real transceiver on a real antenna/amp is high blast radius.
+**Transmit: guarded on the Icom LAN path, still unwired everywhere else.** When AE keys
+TX it sends `xmit 1` (not `transmit set mox`, which carries state). The engine routes
+that to the adapter's `key_tx()` where one exists — and today **only the Icom LAN
+adapter defines it**. On that path the gate really does assert CI-V `1C 00` and real RF
+leaves the rig, behind a stack of guards: an arm latch, a TX-band whitelist (2m/70cm —
+23cm is refused outright), a bare-carrier guard, a 10 s stuck-PTT watchdog, and
+force-unkey + disarm when AE disconnects.
+
+Note the engine **arms automatically on every AE connect**, so on a shared LAN any AE
+client that connects can reach that path. Pass **`--rx-only`** (or
+`AETHER_GATE_RX_ONLY=1`) to refuse PTT at the CI-V layer and advertise
+`tx_capable=False`, so AE greys its TX button instead of offering a control the gate
+will refuse. Recommended for any unattended or permanently-online gateway.
+
+For every other family — hamlib/CAT (Kenwood, Yaesu), the dongle adapters, `sim`, and
+the IC-7300 USB path — there is still **no TX seam**: the hamlib backend has a working
+`set_ptt` (`T 1/0`), but no adapter exposes `key_tx`, so the engine never invokes it and
+keying stays cosmetic. `--enable-tx` only makes AE *offer* TX for a CAT rig; it does not
+key anything.
 
 ```
 aether_gate/
