@@ -47,7 +47,7 @@ if not h.connect(timeout=9.0):
     h.stop()
     sys.exit(1)
 
-civ = Ic9700Civ(LIP, RIP, h.civ_port, h._civ_sock, CIV_ADDR)
+civ = Ic9700Civ(LIP, RIP, h.civ_port, h._civ_sock, civ_addr=CIV_ADDR)
 civ.start()
 time.sleep(1.5)
 

@@ -17,7 +17,7 @@ if not h.connect(timeout=9.0):
     sys.exit(1)
 print(f"  civ_port={h.civ_port} audio_port={h.audio_port} token=0x{h.token:08x}")
 
-civ = Ic9700Civ(LIP, RIP, h.civ_port, h._civ_sock, CIV_ADDR)
+civ = Ic9700Civ(LIP, RIP, h.civ_port, h._civ_sock, civ_addr=CIV_ADDR)
 print(f"opening CI-V stream (civ_addr=0x{CIV_ADDR:02x})...")
 civ.start()
 time.sleep(1.0)
