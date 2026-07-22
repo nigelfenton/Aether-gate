@@ -36,6 +36,19 @@ Two consequences worth stating plainly:
   router, and the unicast VITA-49 stream is routinely dropped by a firewall between
   subnets. Same L2 segment, and none of this is a problem.
 
+### The macvlan alternative
+
+`flex-sim`'s compose takes the other route: a **macvlan** network, giving the container its
+own address on your LAN so it behaves as a genuinely distinct radio. That satisfies the same
+three requirements and avoids a `:4992` collision when something else on the host already
+wants that port.
+
+Its trade-offs are the reason host networking is the default here: macvlan means claiming an
+address your DHCP scope might later hand to something else, and — as flex-sim's compose notes
+— **the Docker host itself cannot talk to a macvlan container**, so AE must run on a different
+machine. Host networking with a distinct `AETHER_GATE_PORT` per radio keeps several gates on
+one box with no address allocation at all.
+
 Because the network stack is the host's, published ports do nothing — `EXPOSE` in the
 Dockerfile is documentation. Set the ports through `AETHER_GATE_PORT` and
 `AETHER_GATE_CTL_PORT` instead.

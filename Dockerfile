@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 #
 # Aether-gate — container image.
 # Copyright (C) 2026 Nigel Fenton (G0JKN). GPL-3.0-or-later.
@@ -27,6 +26,11 @@ FROM python:3.13-slim-trixie AS lan
 
 # Debian 13 (trixie) + Python 3.13 is the stack deploy/install-pi.sh pins the Pi
 # appliance against, so the container and the bare-metal appliance agree.
+LABEL org.opencontainers.image.title="aether-gate" \
+      org.opencontainers.image.description="Put any radio into AetherSDR" \
+      org.opencontainers.image.source="https://github.com/nigelfenton/Aether-gate" \
+      org.opencontainers.image.licenses="GPL-3.0-or-later"
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
