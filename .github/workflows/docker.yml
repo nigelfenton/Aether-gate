@@ -34,6 +34,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # `load: true` needs an image in the local docker daemon, and exporting a
+      # gha cache needs the docker-container driver — the default `docker` driver
+      # supports neither combination ("Cache export is not supported for the
+      # docker driver"). setup-buildx gives us the container driver, which does
+      # both.
+      - uses: docker/setup-buildx-action@v3
+
       - name: Build lan image
         uses: docker/build-push-action@v6
         with:
