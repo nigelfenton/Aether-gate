@@ -83,6 +83,33 @@ expose yet.
 Everything else — RTL-SDR, HPSDR/Hermes-Lite 2/Radioberry, and network Icoms —
 works straight off the flashed card with nothing extra to install.
 
+### ⚠ If 2 m and 70 cm never appear in AetherSDR
+
+Pass **`--model FLEX-6700`**. AE decides which bands to offer from the radio
+model the gate advertises, and a **FLEX-6600 is HF + 6 m only** — so 2 m simply
+never shows up, no matter what your SDR can actually tune. The 6700 has native
+2 m, and advertising it also raises the slice cap from 4 to 8.
+
+This bites because the command-line default is `FLEX-6600`, and it *overrides*
+the SDR adapter's own `FLEX-6700` default. It has to be stated explicitly.
+
+### Making it start at boot
+
+The Setup UI runs the gate as a child process, so it stops when the launcher
+does and does not come back after a power cut. For an always-on appliance,
+install the service instead:
+
+```sh
+sudo cp /home/aethergate/gate/deploy/systemd/aether-gate-sdr.service /etc/systemd/system/
+sudoedit /etc/systemd/system/aether-gate-sdr.service   # set --soapy-driver, --ae, --model
+sudo systemctl daemon-reload
+sudo systemctl enable --now aether-gate-sdr
+journalctl -u aether-gate-sdr -f
+```
+
+Verified on a Pi 3B+ with an RSP1a: after a reboot the Pi is back in about 40
+seconds with the gate already running and AetherSDR reconnecting on its own.
+
 > **RSP tuning note:** sample rates below 2 MHz carry an uncompensated Low-IF
 > offset (≈13 kHz low at 500 k, ≈16 kHz at 1 M). Use **2 MHz or higher** and
 > the tuning is true. Measured on an RSP1a — it is a property of the Low-IF
