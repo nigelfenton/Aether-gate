@@ -46,6 +46,37 @@ user, so it works whatever username you pick in Imager — and works even if you
 skip Imager customisation entirely. Provenance is stamped in
 `/etc/aether-gate-image-release`.
 
+**Which Pi?** One image covers **Pi 3, 3B+, 4, 5 and Zero 2 W** — it is stock
+64-bit Pi OS, so any board Pi OS calls 64-bit-capable will boot it. A **Pi 4 or
+5 is the recommendation**: the Pi 3 shares one USB 2 bus between Ethernet and
+USB, which shows up as audio stutter at high sample rates. ❌ **Pi 1, Pi 2 and
+the original Pi Zero cannot run it** — they are 32-bit (ARMv6/v7) and there is
+no 64-bit kernel for them. The failure looks alive but is not: solid red LED,
+green activity flickering, and the Pi never appears on the network. If that is
+what you see, check the board — the Ethernet MAC prefix `b8:27:eb` is shared by
+Pi 1 through Pi 3 and cannot tell them apart, so read the silkscreen.
+
+### SDRplay (RSP1a, RSP2, RSPdx…) — one extra command
+
+The published image does **not** include SDRplay support. Their API is
+proprietary and its licence does not permit us to redistribute it inside an
+image. It installs fine on your own Pi, where you accept their licence
+yourself:
+
+```sh
+git clone https://github.com/nigelfenton/Aether-gate.git
+cd Aether-gate
+sudo ./deploy/install-pi.sh --with-sdrplay
+```
+
+Then pick `sdrplay` as the driver in the Setup UI. Everything else — RTL-SDR,
+HPSDR/Hermes-Lite 2/Radioberry, and network Icoms — works straight off the
+flashed card with nothing extra to install.
+
+> **RSP tuning note:** sample rates below 2 MHz carry an uncompensated Low-IF
+> offset (≈13 kHz low at 500 k, ≈16 kHz at 1 M). Use **2 MHz or higher** and
+> the tuning is true.
+
 ### Building the image yourself
 
 `deploy/build-image.sh` reproduces it from any 64-bit Pi (4/5) or other
@@ -57,6 +88,11 @@ git clone https://github.com/nigelfenton/Aether-gate.git
 cd Aether-gate
 sudo ./deploy/build-image.sh          # -> out/aether-gate-pi-<ver>.img.xz
 ```
+
+Add `--with-sdrplay` to bake SDRplay support into your own image. That output
+is named `…-sdrplay-DO-NOT-REDISTRIBUTE.img.xz`, because it is fine for your
+own hardware but must not be published or passed on — see the SDRplay note
+above.
 
 ---
 
