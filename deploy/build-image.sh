@@ -38,10 +38,16 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKDIR="$REPO_ROOT/imagework"
 OUTDIR="$REPO_ROOT/out"
 SDR_ARG="--with-sdr"
+# Default OFF: this builder's output is meant to be publishable, and SDRplay's
+# EULA grants no distribution right (see WITH_SDRPLAY in install-pi.sh). Opt in
+# with --with-sdrplay for a private image for your own hardware.
+SDRPLAY_ARG="--no-sdrplay"
 
 for a in "$@"; do
   case "$a" in
     --no-sdr)       SDR_ARG="--no-sdr" ;;
+    --with-sdrplay) SDRPLAY_ARG="--with-sdrplay" ;;
+    --no-sdrplay)   SDRPLAY_ARG="--no-sdrplay" ;;
     --workdir=*)    WORKDIR="${a#*=}" ;;
     --out=*)        OUTDIR="${a#*=}" ;;
     --base-url=*)   BASE_URL="${a#*=}" ;;
@@ -156,7 +162,7 @@ rsync -a --exclude .git --exclude attic --exclude imagework --exclude out \
 # ------------------------------------------------------------------------------
 # 4) the in-chroot stage: service user, installer, hostname, cleanup
 # ------------------------------------------------------------------------------
-say "Chroot stage (installer $SDR_ARG) — the SDR builds take a while"
+say "Chroot stage (installer $SDR_ARG $SDRPLAY_ARG) — the SDR builds take a while"
 cat > "$ROOT/tmp/image-stage.sh" <<STAGE
 #!/bin/bash
 set -euo pipefail
@@ -169,7 +175,7 @@ if ! id -u $AG_SVC_USER >/dev/null 2>&1; then
 fi
 usermod -aG dialout,plugdev $AG_SVC_USER   # CAT serial + USB dongles
 
-AG_USER=$AG_SVC_USER bash /opt/aether-gate-src/deploy/install-pi.sh $SDR_ARG
+AG_USER=$AG_SVC_USER bash /opt/aether-gate-src/deploy/install-pi.sh $SDR_ARG $SDRPLAY_ARG
 
 # appliance identity: http://aethergate.local
 echo $IMG_HOSTNAME > /etc/hostname
@@ -208,6 +214,11 @@ LOOP=""; ROOT=""
 # 6) name, compress, checksum
 # ------------------------------------------------------------------------------
 SUFFIX=""; [ "$SDR_ARG" = "--no-sdr" ] && SUFFIX="-lite"
+# NAME THE PROPRIETARY BUILD SO IT CANNOT BE UPLOADED BY ACCIDENT. An image with
+# the SDRplay API baked in is for the builder's own hardware only — the EULA
+# grants no right to distribute it. The filename is the last line of defence
+# between "built it for my own Pi" and "attached it to a public release".
+[ "$SDRPLAY_ARG" = "--with-sdrplay" ] && SUFFIX="${SUFFIX}-sdrplay-DO-NOT-REDISTRIBUTE"
 OUT="$OUTDIR/aether-gate-pi${SUFFIX}-${VER}.img"
 say "Compressing -> $OUT.xz"
 mv "$IMG" "$OUT"

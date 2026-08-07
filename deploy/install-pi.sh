@@ -54,6 +54,13 @@ SRC_DIR="$GATE_HOME/gate-build"            # where the SDR sources are cloned/bu
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # the checkout this script lives in
 
 WITH_SDR=1
+# SDRplay's API is proprietary and its EULA grants only "publicly display,
+# publicly perform ... in Object form" — no distribution right, with everything
+# not granted expressly reserved (clause 3) and a confidentiality clause that
+# bars disclosure to third parties (clause 2). Fetching it onto the operator's
+# own Pi is fine: THEY accept the licence. Baking it into an image that is then
+# published is redistribution, so release builds set this to 0.
+WITH_SDRPLAY=1
 DRY_RUN=0
 CHECK_ONLY=0
 
@@ -61,6 +68,8 @@ for a in "$@"; do
   case "$a" in
     --no-sdr)   WITH_SDR=0 ;;
     --with-sdr) WITH_SDR=1 ;;
+    --no-sdrplay)   WITH_SDRPLAY=0 ;;
+    --with-sdrplay) WITH_SDRPLAY=1 ;;
     --dry-run)  DRY_RUN=1 ;;
     --check)    CHECK_ONLY=1 ;;
     -h|--help)  sed -n '2,40p' "$0"; exit 0 ;;
@@ -103,8 +112,14 @@ report() {
   chk sh -c 'command -v SoapySDRUtil'
   chk python3 -c 'import SoapySDR'
   chk sh -c 'SoapySDRUtil --info 2>/dev/null | grep -q rtlsdr'
-  chk test -x /opt/sdrplay_api/sdrplay_apiService
-  chk sh -c 'SoapySDRUtil --info 2>/dev/null | grep -qi sdrplay'
+  if [ "$WITH_SDRPLAY" = 1 ]; then
+    chk test -x /opt/sdrplay_api/sdrplay_apiService
+    chk sh -c 'SoapySDRUtil --info 2>/dev/null | grep -qi sdrplay'
+  else
+    # Absent BY DESIGN on a published image — see WITH_SDRPLAY above. Reporting
+    # these as [--] would read as a broken build to the first ham who runs --check.
+    printf '    \033[1;33m[..]\033[0m   SDRplay not installed (--no-sdrplay; add with --with-sdrplay)\n'
+  fi
   chk sh -c 'command -v avahi-daemon || test -x /usr/sbin/avahi-daemon'
   say "Aether-gate"
   chk test -d "$GATE_DIR/aether_gate"
@@ -174,7 +189,12 @@ if [ "$WITH_SDR" = 1 ]; then
   fi
 
   # ---- SDRplay (RSP1a/RSP2/RSPdx...): proprietary API + SoapySDRPlay3 ----------
-  if [ -e /usr/local/lib/libsdrplay_api.so ] && SoapySDRUtil --info 2>/dev/null | grep -q sdrplay; then
+  if [ "$WITH_SDRPLAY" != 1 ]; then
+    say "SDR build 4-5/5: SDRplay SKIPPED (--no-sdrplay)"
+    info "RSP owners: run 'sudo ./deploy/install-pi.sh --with-sdrplay' on the Pi to add it."
+    info "It is fetched from sdrplay.com so you accept their licence directly — which is"
+    info "why it cannot be shipped pre-baked in a published image."
+  elif [ -e /usr/local/lib/libsdrplay_api.so ] && SoapySDRUtil --info 2>/dev/null | grep -q sdrplay; then
     info "SDRplay API + Soapy module already present — skipping."
   else
     say "SDR build 4/5: SDRplay API 3.15 (proprietary) -> /usr/local + /opt/sdrplay_api"
