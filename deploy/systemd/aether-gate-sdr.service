@@ -1,0 +1,66 @@
+# Aether-gate — a USB SDR (SDRplay RSP / RTL-SDR / Airspy) as a persistent service.
+# Copyright (C) 2026 Nigel Fenton (G0JKN). GPL-3.0-or-later.
+#
+# Install on the appliance:
+#   sudo cp aether-gate-sdr.service /etc/systemd/system/
+#   sudoedit /etc/systemd/system/aether-gate-sdr.service   # set --soapy-driver / --ae / --model
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now aether-gate-sdr
+#   journalctl -u aether-gate-sdr -f
+#
+# WHY a service (not the Setup UI launcher): the UI spawns the gate as a CHILD,
+# so when the launcher or the browser session goes away the gate dies with it.
+# systemd owns the process, restarts it on a crash, and brings it up at boot —
+# which is what makes the Pi an appliance rather than something you have to log
+# into after every power cut.
+
+[Unit]
+Description=Aether-gate — USB SDR bridge to AetherSDR (Flex)
+Documentation=https://github.com/nigelfenton/Aether-gate
+After=network-online.target
+Wants=network-online.target
+# SDRplay only: the API daemon must be up before we open the device. Harmless
+# on an image without it — systemd ignores a Wants= for a unit that isn't there.
+Wants=sdrplay.service
+After=sdrplay.service
+
+[Service]
+Type=simple
+# The appliance image runs the gate as its own system user, so the service is
+# independent of whatever username Raspberry Pi Imager created.
+User=aethergate
+WorkingDirectory=/home/aethergate/gate
+Environment=PYTHONPATH=/home/aethergate/gate
+Environment=PYTHONUNBUFFERED=1
+
+# --- EDIT THESE ---------------------------------------------------------------
+# --soapy-driver : sdrplay | rtlsdr | airspy | ...
+# --ae           : the IP of the machine running AetherSDR
+# --ip           : this Pi's LAN IP (omit to autodetect)
+# --model        : FLEX-6700 advertises 8 slices AND unlocks AE's native 2m.
+#                  FLEX-6600 is HF+6m only, so 2m never appears in AE — this is
+#                  the flag people miss. NB the CLI default is FLEX-6600, which
+#                  overrides the soapy adapter's own FLEX-6700 default, so it
+#                  has to be stated explicitly here.
+# --samp-rate    : SDRplay RSPs carry an uncompensated Low-IF offset below 2 MHz
+#                  (about -13 kHz at 500k). Stay at 2.04 MS/s or above.
+ExecStart=/usr/bin/python3 -m aether_gate \
+    --adapter soapy --soapy-driver sdrplay \
+    --samp-rate 2040000 --model FLEX-6700 \
+    --ae 10.0.0.104 \
+    --serial GATESDR01 --station "SDR-Appliance" --ctl-port 8733
+
+# A USB SDR has no session to release (unlike the Icom's 0x05 disconnect), but
+# a catchable SIGTERM still lets the adapter close the device cleanly so the
+# next start does not find it busy.
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=10
+
+# Restart on a crash; a clean `systemctl stop` stays stopped. RestartSec gives
+# a yanked or re-enumerating USB device time to settle rather than hammering it.
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
