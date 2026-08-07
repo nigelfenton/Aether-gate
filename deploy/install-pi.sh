@@ -47,7 +47,19 @@ SOAPYSDRPLAY_REPO="https://github.com/pothosware/SoapySDRPlay3.git"
 SOAPYSDRPLAY_COMMIT="6cc3131"              # merge PR #104 (2026-06-12)
 
 # AG_USER lets an image build (chroot, no sudo lineage) name the service user.
-GATE_USER="${AG_USER:-${SUDO_USER:-pi}}"
+#
+# AN EXISTING INSTALL OWNS ITS OWN USER. Without this, re-running the installer
+# on a flashed appliance — which is exactly what add-sdrplay.sh does — adopts
+# whoever typed sudo. The gate got re-homed from /home/aethergate/gate to
+# /home/<caller>/gate and the unit was rewritten to User=<caller>, defeating the
+# dedicated service user that makes the image work whatever username Raspberry
+# Pi Imager created. Observed on the appliance 2026-08-07 (became User=nigel).
+# An explicit AG_USER still wins, so image builds are unaffected.
+INSTALLED_USER=""
+if [ -z "${AG_USER:-}" ] && [ -r /etc/systemd/system/aether-gate-setup.service ]; then
+  INSTALLED_USER="$(sed -n 's/^User=//p' /etc/systemd/system/aether-gate-setup.service | head -1)"
+fi
+GATE_USER="${AG_USER:-${INSTALLED_USER:-${SUDO_USER:-pi}}}"
 GATE_HOME="$(getent passwd "$GATE_USER" | cut -d: -f6)"
 GATE_DIR="$GATE_HOME/gate"
 SRC_DIR="$GATE_HOME/gate-build"            # where the SDR sources are cloned/built
