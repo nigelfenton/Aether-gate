@@ -122,7 +122,17 @@ report() {
   fi
   chk sh -c 'command -v avahi-daemon || test -x /usr/sbin/avahi-daemon'
   say "Aether-gate"
-  chk test -d "$GATE_DIR/aether_gate"
+  # LOOK WHERE THE GATE ACTUALLY IS, not where THIS invocation would install it.
+  # On an appliance the gate belongs to the `aethergate` service user, but
+  # --check is run by whoever is logged in (nigel, pi, ...), so GATE_DIR points
+  # at the caller's home and the test failed red on a perfectly healthy image.
+  # Prefer the running service's WorkingDirectory, then this caller's dir.
+  SVC_DIR="$(systemctl show -p WorkingDirectory --value aether-gate-setup.service 2>/dev/null || true)"
+  if [ -n "$SVC_DIR" ] && [ -d "$SVC_DIR/aether_gate" ]; then
+    chk test -d "$SVC_DIR/aether_gate"
+  else
+    chk test -d "$GATE_DIR/aether_gate"
+  fi
   chk systemctl is-enabled aether-gate-setup.service
   chk python3 -c 'import numpy; import aether_gate' 2>/dev/null || true
 }
