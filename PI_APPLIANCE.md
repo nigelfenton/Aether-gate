@@ -63,19 +63,31 @@ proprietary and its licence does not permit us to redistribute it inside an
 image. It installs fine on your own Pi, where you accept their licence
 yourself:
 
+On the appliance itself (the script is already on the card):
+
 ```sh
-git clone https://github.com/nigelfenton/Aether-gate.git
-cd Aether-gate
-sudo ./deploy/install-pi.sh --with-sdrplay
+sudo /home/aethergate/gate/deploy/add-sdrplay.sh
 ```
 
-Then pick `sdrplay` as the driver in the Setup UI. Everything else — RTL-SDR,
-HPSDR/Hermes-Lite 2/Radioberry, and network Icoms — works straight off the
-flashed card with nothing extra to install.
+It is safe to re-run, refreshes the package lists the image ships without, and
+verifies the daemon and the SoapySDR driver rather than just assuming they came
+up. Then pick `sdrplay` as the driver in the Setup UI.
+
+**All RSP models are covered by one driver.** SDRplay's API claims the whole
+family — RSP1 (`2500`), RSP1a (`3000`), RSP1B (`3010`), RSP2/2pro (`3020`),
+RSPduo (`3030`), RSPdx (`3050`) and RSPdx-R2 (`3060`) — so the same install
+serves any of them. Only the RSP1a has been tested here; the RSPduo's dual-tuner
+modes in particular need extra Soapy device arguments that the Setup UI does not
+expose yet.
+
+Everything else — RTL-SDR, HPSDR/Hermes-Lite 2/Radioberry, and network Icoms —
+works straight off the flashed card with nothing extra to install.
 
 > **RSP tuning note:** sample rates below 2 MHz carry an uncompensated Low-IF
 > offset (≈13 kHz low at 500 k, ≈16 kHz at 1 M). Use **2 MHz or higher** and
-> the tuning is true.
+> the tuning is true. Measured on an RSP1a — it is a property of the Low-IF
+> plan, so expect it family-wide, but the exact figures are not characterised
+> for other models.
 
 ### Building the image yourself
 
