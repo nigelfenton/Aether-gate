@@ -196,6 +196,14 @@ VER="$(git -C "$REPO_ROOT" describe --tags --always 2>/dev/null || echo unknown)
   echo "version=$VER"
   echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "sdr=$SDR_ARG"
+  # Record the SDRplay decision on the card itself. A ham running --check wants
+  # to know whether SDRplay is missing because of a broken build or by design,
+  # and anyone handed an image needs to see at a glance whether it is one of the
+  # private --with-sdrplay builds that must not be passed on.
+  echo "sdrplay=$SDRPLAY_ARG"
+  if [ "$SDRPLAY_ARG" = "--with-sdrplay" ]; then
+    echo "redistributable=no  # contains SDRplay's proprietary API - do not publish or pass on"
+  fi
 } > "$ROOT/etc/aether-gate-image-release"
 
 # ------------------------------------------------------------------------------
