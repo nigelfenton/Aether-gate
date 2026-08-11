@@ -160,6 +160,56 @@ def _status():
         return {"running": running, "pid": (_proc.pid if running else None), "argv": _last_argv}
 
 
+# --- one-click update ----------------------------------------------------
+#
+# The operator this is for is comfortable with radios, not terminals, so both
+# endpoints answer in whole sentences and neither can leave a half-installed
+# tree. See updater.py for the swap/rollback design.
+_update_lock = threading.Lock()
+_update_busy = False
+
+
+def _update_status():
+    from . import __version__
+    from . import updater
+    try:
+        st = updater.status(__version__)
+    except Exception as e:                    # never let a check break the page
+        return {"current": __version__, "latest": None, "available": False,
+                "checked": False, "message": f"Could not check for updates: {e}"}
+    st["busy"] = _update_busy
+    return st
+
+
+def _update_install(body):
+    """Install the newest release. REFUSES while the gate is running.
+
+    Stopping first is the operator's decision, not ours: the gate may be mid-QSO
+    or feeding a decoder, and swapping the code under a live radio session is
+    exactly the surprise this whole feature exists to avoid.
+    """
+    global _update_busy
+    from . import __version__
+    from . import updater
+
+    with _lock:
+        running = _proc is not None and _proc.poll() is None
+    if running:
+        return 409, {"ok": False,
+                     "message": "The gate is running. Press Stop first, then update."}
+
+    with _update_lock:
+        if _update_busy:
+            return 409, {"ok": False, "message": "An update is already in progress."}
+        _update_busy = True
+    try:
+        live = os.path.dirname(os.path.abspath(__file__))     # .../gate/aether_gate
+        res = updater.install(body.get("tag"), live, logfn=lambda m: print(m, flush=True))
+        return (200 if res.get("ok") else 500), res
+    finally:
+        _update_busy = False
+
+
 # --- "Known info" health checks ------------------------------------------
 def _classify_ip(ip):
     try:
@@ -298,6 +348,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json(200, _status())
         elif p.startswith("/api/known"):
             self._json(200, _known_checks())
+        elif p.startswith("/api/update"):
+            self._json(200, _update_status())
         elif p.startswith("/known"):
             self._send(200, KNOWN_PAGE, "text/html; charset=utf-8")
         else:
@@ -310,7 +362,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except Exception:
             body = {}
         p = self.path
-        if p.startswith("/api/start"):
+        if p.startswith("/api/update/install"):
+            code, resp = _update_install(body); self._json(code, resp)
+        elif p.startswith("/api/start"):
             code, resp = _start(body); self._json(code, resp)
         elif p.startswith("/api/stop"):
             global _proc
@@ -364,6 +418,13 @@ PAGE = r"""<!DOCTYPE html><html><head><meta charset=utf-8>
  a{color:#58a6ff}
 </style></head><body>
 <h1>Aether-gate</h1><div class=sub>Radio setup &amp; launcher &mdash; present any radio to AetherSDR as a Flex &middot; <a href="/known" target=_blank>Known info / status &#8599;</a></div>
+<div class=card id=updcard style="display:none">
+ <div id=updmsg class=hint></div>
+ <div id=updactions style="margin-top:10px;display:none">
+  <button id=updgo>Install update</button>
+  <span class=hint id=updnote style="margin-left:10px"></span>
+ </div>
+</div>
 
 <div class=hintbox id=hint>
  <b>Getting started:</b>
@@ -640,7 +701,46 @@ async function poll(){const s=await (await fetch('/api/status')).json();
  document.getElementById('st').textContent=s.running?('RUNNING (pid '+s.pid+')'):'stopped';
  document.getElementById('argv').textContent=(s.argv&&s.argv.length)?s.argv.slice(3).join(' '):'';
  const cp=document.getElementById('ctl_port').value||'8731';
- document.getElementById('panellink').href='http://'+location.hostname+':'+cp+'/';}
+ document.getElementById('panellink').href='http://'+location.hostname+':'+cp+'/';
+ UPD_RUNNING=s.running;}
+
+// --- updates -------------------------------------------------------------
+// Deliberately quiet: the card stays hidden unless there is something to say,
+// so the page does not nag someone who just wants to start their radio.
+let UPD_RUNNING=false, UPD_TAG=null;
+async function checkUpdate(){
+ let u; try{u=await (await fetch('/api/update')).json();}catch(e){return;}
+ const card=document.getElementById('updcard'), acts=document.getElementById('updactions');
+ if(u.available){
+  UPD_TAG=u.latest;
+  card.style.display=''; acts.style.display='';
+  document.getElementById('updmsg').innerHTML='<b>'+u.message+'</b>';
+  document.getElementById('updnote').textContent=
+    UPD_RUNNING?'Press Stop first — the gate must not be running.':'Takes about a minute.';
+  document.getElementById('updgo').disabled=!!UPD_RUNNING;
+ } else if(!u.checked){
+  card.style.display=''; acts.style.display='none';
+  document.getElementById('updmsg').textContent=u.message;
+ } else { card.style.display='none'; }
+}
+async function doUpdate(){
+ const btn=document.getElementById('updgo'), note=document.getElementById('updnote');
+ btn.disabled=true; note.textContent='Updating — do not power off…';
+ let r; try{
+  r=await (await fetch('/api/update/install',{method:'POST',
+        body:JSON.stringify({tag:UPD_TAG})})).json();
+ }catch(e){ note.textContent='Update failed: '+e; btn.disabled=false; return; }
+ document.getElementById('updmsg').innerHTML='<b>'+(r.message||'')+'</b>';
+ if(r.ok){
+  note.innerHTML='Now press <b>Start</b> to run the new version.';
+  document.getElementById('updactions').style.display='none';
+ } else {
+  note.textContent=r.rolled_back?'Your working version was put back.':'';
+  btn.disabled=false;
+ }
+}
+document.getElementById('updgo').onclick=doUpdate;
+setTimeout(checkUpdate,1500);
 init();
 </script></body></html>"""
 
