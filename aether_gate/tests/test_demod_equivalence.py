@@ -18,10 +18,40 @@ design collapses into the single full-rate FIR its own docstring calls "~13x too
 slow". 2.040 MS/s gives 85 = 5*17 and is 3.6x cheaper for a one-number change.
 `test_prime_decimation_is_a_single_stage` documents that cliff so it is a known
 property rather than a surprise.
+
+⚠ NUMPY IS OPTIONAL IN THIS PROJECT. The gate runs pure-stdlib when numpy is
+absent (see core/fft.py), and the CI matrix has a job with no numpy installed —
+so this file must SKIP cleanly rather than crash. It is run BOTH ways: under
+pytest, and as a bare module from the CI allow-list, so neither pytest nor numpy
+can be imported unconditionally at module scope.
 """
-import numpy as np
+import sys
+
+try:
+    import numpy as np
+except ImportError:                                  # pragma: no cover
+    np = None
 
 AUDIO_RATE = 24000
+
+
+def _skip(reason):
+    """Skip under pytest; exit 0 as a bare module. Both are how this file runs.
+
+    ⚠ Keyed on whether pytest is DRIVING this run, not on whether it is
+    importable: pytest is often installed on a host that is executing the file
+    as a plain module, and calling pytest.skip() there raises Skipped and exits
+    NON-ZERO — which reads to CI as a failing test rather than a skipped one.
+    """
+    if "pytest" in sys.modules:
+        import pytest
+        pytest.skip(reason, allow_module_level=True)
+    print(f"SKIP: {reason}")
+    raise SystemExit(0)
+
+
+if np is None:
+    _skip("numpy not installed - the demod path it tests is numpy-only")
 
 
 # --------------------------------------------------------------------------
