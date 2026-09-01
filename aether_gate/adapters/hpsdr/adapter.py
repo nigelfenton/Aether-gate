@@ -153,9 +153,25 @@ class HpsdrAdapter(RadioAdapter):
         self.radio_ip = ip
         self._dst = (ip, hp.METIS_PORT)
         # confirm it's up (single read-only discovery does NOT steal the stream)
+        #
+        # ⚠ THIS CHECK IS THE ONLY ONE AN EXPLICIT --radio-ip GETS. The line
+        # above short-circuits `or self._discover(s)` when the IP was supplied,
+        # so the RuntimeError never fires for a configured address — and every
+        # systemd unit in deploy/ passes --radio-ip. Discarding this result is
+        # what let a gate come up against a powered-off Radioberry, print
+        # "board=0x00" (the `or 0` fallback, not a reading), advertise a
+        # FLEX-6700 and leave AE on "Connecting to radio..." with a black
+        # waterfall (#41).
         if self._board_id is None:
             self._discover(s)
-        print(f"[hpsdr] {ip} board=0x{(self._board_id or 0):02x} "
+        if self._board_id is None:
+            s.close()
+            raise RuntimeError(
+                f"no HPSDR device answered at {ip} (is it powered on?)")
+        self.note_device_alive()            # it answered — start the health clock
+        # board id is a READING now, not `or 0`: open() refuses above if nothing
+        # answered, so reaching here means the board really did reply.
+        print(f"[hpsdr] {ip} board=0x{self._board_id:02x} "
               f"@ {self.samp_rate/1000:.0f} kHz, RX1={self.center_hz/1e6:.4f} MHz, "
               f"gain +{self.gain_db} dB", flush=True)
 
@@ -272,11 +288,21 @@ class HpsdrAdapter(RadioAdapter):
             try:
                 d, _ = self._sock.recvfrom(2048)
             except socket.timeout:
+                # EP6 free-runs at 48 kHz+; a timeout means the board has gone
+                # quiet, not that it is idle. Sustained silence -> device_lost,
+                # which is what drops AE instead of freezing its waterfall.
+                if self.note_device_silent(
+                        "the HPSDR device stopped sending IQ "
+                        "(powered off, unplugged, or off the network)"):
+                    print(f"[hpsdr] no EP6 data for "
+                          f"{self.device_lost_after_s:.0f}s — treating the device "
+                          f"as lost", flush=True)
                 continue
             except OSError:
                 break
             if hp.ep6_seq(d) is None:
                 continue
+            self.note_device_alive()        # a real EP6 frame parsed
             # Response telemetry rides in the same packets' C&C bytes. Cheap (5 B
             # per frame, no IQ decode) and independent of the settle window — it
             # is radio status, not signal, so we want it even while settling.
