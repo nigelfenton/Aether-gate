@@ -4,6 +4,20 @@ All notable changes to Aether-gate. Newest first.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-09-02
+
+Headline: the panadapter's advertised bin width is now true, dBm calibration is
+per-device rather than one global guess, and `/device` exposes the controls the
+Flex protocol has no verb for. Most of this came in via #40, an RSPdx-R2
+bring-up from @crypticpy.
+
+Also in this release: the project's operating rules written down in
+`CONSTITUTION.md` and `AGENTS.md`.
+
+Not in this release: the `device_lost` base-class promotion (#41/#42) is still
+an open PR.
+
+
 ### Fixed
 - **The 0.5 s waterfall tick — librtlsdr's USB lump.** The driver delivers fixed
   262,144-byte transfers (131,072 samples) regardless of sample rate: 64 ms of
