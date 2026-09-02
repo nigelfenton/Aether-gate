@@ -19,6 +19,7 @@ Two adapter shapes (set `provides`):
 
 Either spectrum/IQ method may return None to signal a TX gap (RX muted this frame).
 """
+import time as _time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -84,6 +85,53 @@ class RadioAdapter(ABC):
     # opposite handling, which is why they get separate channels.
     device_lost = False
     device_lost_reason = ""
+
+    # Wall-clock of the last evidence the hardware is really there. Adapters
+    # that use the helpers below never touch it directly.
+    _dl_healthy_at = 0.0
+
+    # How long a source may produce nothing before the core is told the device
+    # is gone. Soapy measured 3 s as long enough to rule out a transient and
+    # short enough that AE is not left on a frozen frame; a subclass whose
+    # hardware is legitimately quiet for longer may raise it.
+    device_lost_after_s = 3.0
+
+    def note_device_alive(self):
+        """Call on every piece of real evidence the hardware is present — a
+        packet that parsed, a read that returned samples, a status reply.
+
+        Cheap by design (one clock read) so it can sit in a hot read loop.
+        """
+        self._dl_healthy_at = _time.monotonic()
+
+    def note_device_silent(self, reason, after_s=None):
+        """Call where a source has produced NOTHING — a socket timeout, a read
+        error, an unchanged buffer. Sets device_lost once the silence has run
+        past the threshold; a no-op before that, so a transient costs nothing.
+
+        Returns True if this call is the one that declared the device lost, so
+        a caller can log the transition exactly once.
+
+        The threshold is measured from the last note_device_alive(), NOT from
+        the first silent call: a source that alternates one good read with a
+        hundred failures is not healthy, and resetting a counter on each good
+        read would hide that forever.
+        """
+        if self.device_lost:
+            return False
+        if not self._dl_healthy_at:
+            # Never seen alive. open() is where "it was never there" belongs —
+            # that is a startup failure with a better error than this one — so
+            # start the clock rather than declare a device lost that may simply
+            # not have produced its first block yet.
+            self._dl_healthy_at = _time.monotonic()
+            return False
+        limit = self.device_lost_after_s if after_s is None else after_s
+        if _time.monotonic() - self._dl_healthy_at < limit:
+            return False
+        self.device_lost = True
+        self.device_lost_reason = reason
+        return True
 
     def close(self):
         """Release the source. Override as needed."""
