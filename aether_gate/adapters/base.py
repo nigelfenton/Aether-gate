@@ -49,6 +49,13 @@ class AdapterCaps:
 class Meters:
     """Optional readback an adapter can provide each frame."""
     s_meter_dbm: float = -120.0
+    # The noise floor the signal was measured against, same passband and scale.
+    # None means this adapter does not separate the two — a rig's meter reports
+    # one number off its own detector and cannot say what was underneath it.
+    # Where both exist their difference is SNR, which is the number that says
+    # whether an antenna change actually helped: a better antenna raises signal
+    # AND noise, and so does turning the gain up.
+    noise_dbm: float | None = None
     tx: bool = False
     fwd_power_w: float = 0.0
     swr: float = 1.0

@@ -39,6 +39,11 @@ RCVBUF_BYTES = 1 << 20       # 1 MB EP6 socket buffer — headroom for schedulin
                              # jitter. Precautionary: the OS default (64 KB here)
                              # measured no worse, so this is insurance, not a fix.
 
+# AD9866 LNA gain range, in dB — what the hardware actually accepts, and what
+# we advertise to AE so its slider cannot ask for anything outside it.
+LNA_MIN_DB = -12
+LNA_MAX_DB = 48
+
 
 class HpsdrAdapter(RadioAdapter):
     """Live IQ from an HPSDR Protocol-1 SDR. The core runs the FFT (provides='iq')."""
@@ -300,12 +305,25 @@ class HpsdrAdapter(RadioAdapter):
     def retune(self, center_hz):
         self._retune_to = float(center_hz)
 
-    def set_gain(self, rfgain):
-        """Map AE's RF-gain slider (0..100) to the HPSDR LNA range (-12..+48 dB)
-        and apply it live (the reader's round-robin re-latches the gain register).
-        Takes effect on the next frame; no restart needed."""
-        rfgain = max(0.0, min(100.0, float(rfgain)))
-        self.gain_db = int(round(-12 + rfgain / 100.0 * 60))   # 0->-12dB, 100->+48dB
+    def gain_range(self):
+        """(low_db, high_db, step_db) for AE's `display pan rfgain_info` — the
+        AD9866 LNA's own range."""
+        return (LNA_MIN_DB, LNA_MAX_DB, 1)
+
+    def set_gain(self, gain_db):
+        """AE's RF Gain slider, in dB, applied live (the reader's round-robin
+        re-latches the gain register). Takes effect next frame; no restart.
+
+        ⚠ dB, NOT 0..100. AE sends the operator's value in the range this
+        adapter advertises via gain_range()/rfgain_info
+        (AetherSDR IRadioBackend::setPanRfGain -> `display pan set N rfgain=X`).
+        The old code rescaled 0..100 onto -12..+48, which silently divided every
+        setting: with AE on its unanswered-default -8..32 travel, asking for
+        32 dB landed at +7.2 dB and the slider's whole top end was unreachable.
+        Clamp rather than refuse — the control is continuous, and a value that
+        stops moving beats one that is silently ignored.
+        """
+        self.gain_db = int(round(max(LNA_MIN_DB, min(LNA_MAX_DB, float(gain_db)))))
         self._gain_dirty = True
 
     def telemetry(self):

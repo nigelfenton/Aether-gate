@@ -260,7 +260,7 @@ def test_real_iq_to_dbm_binning_handles_an_uneven_split():
     drops the remainder loses the top of the span. Compared against the original
     per-column reduction applied to the same spectrum.
     """
-    from aether_gate.core.fft import iq_to_dbm
+    from aether_gate.core.fft import iq_to_dbm, WINDOW_COHERENT_GAIN
 
     rng = np.random.default_rng(3)
     n, bins = 4096, 1600
@@ -270,7 +270,12 @@ def test_real_iq_to_dbm_binning_handles_an_uneven_split():
 
     win = np.hanning(n)
     spec = np.fft.fftshift(np.fft.fft(iq * win))
-    mag = np.abs(spec) / n
+    # Same normalisation the shipped path uses — length AND the window's
+    # coherent gain, so a full-scale carrier anchors at 0 dBFS. This test is
+    # about the BINNING being identical, so the reference has to share the
+    # scaling or it measures the calibration instead. (Added 2026-08-31 with
+    # the shared dBFS->dBm seam.)
+    mag = np.abs(spec) / (n * WINDOW_COHERENT_GAIN)
     dbm = 20.0 * np.log10(np.maximum(mag, 1e-12))
     want = np.clip(_ref_bin_peaks(dbm, bins), -140.0, 0.0)
 

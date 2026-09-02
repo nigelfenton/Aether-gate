@@ -56,6 +56,11 @@ Also handles AE's own CWX keyer (cwx send/wpm/qsk_enabled) for authentic CW TX.
 """
 import argparse, http.server, json, math, os, glob, random, select, socket, struct, subprocess, sys, threading, time, urllib.parse, uuid, wave
 
+try:
+    import numpy as _np
+except Exception:                       # pragma: no cover - exercised when numpy absent
+    _np = None                          # the stdlib fallbacks below stay correct, just slower
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURES_DIR = os.path.join(HERE, "fixtures")
 REPORTS_DIR  = os.path.join(HERE, "reports")
@@ -205,28 +210,101 @@ def vita_header(stream_id, pcc, seq, payload_len):
     return struct.pack(">IIIIIII", word0, stream_id, 0x001C2D00, pcc & 0xFFFF, 0, 0, 0)
 
 
-def fft_packet(stream_id, seq, pixels, frame_index):
+def fft_packet(stream_id, seq, pixels, frame_index, start_bin=0, total_bins=None):
+    """One FFT datagram, which may be a SEGMENT of a wider frame.
+
+    AE reassembles by (frame_index, total_bins) and writes each datagram's bins
+    at start_bin — see PanadapterStream.cpp's FrameAssembler. `pixels` is this
+    segment; `total_bins` is the width of the whole frame, defaulting to a
+    single-segment frame so every existing caller is unchanged.
+    """
     n = len(pixels)
-    sub = struct.pack(">HHHHI", 0, n, 2, n, frame_index)
+    total = n if total_bins is None else int(total_bins)
+    sub = struct.pack(">HHHHI", start_bin, n, 2, total, frame_index)
     payload = sub + struct.pack(">%dH" % n, *pixels)
     return vita_header(stream_id, PCC_FFT, seq, len(payload)) + payload
 
 
-def wf_packet(stream_id, seq, intens, low_hz, binbw_hz, timecode, auto_black=20):
+def wf_packet(stream_id, seq, intens, low_hz, binbw_hz, timecode, auto_black=20,
+              first_bin=0, total_bins=None):
     # auto_black = the tile's AutoBlackLevel field (raw uint, same domain as the
     # intensity samples). A real Flex puts the radio-measured noise-floor level
     # here; AE's #3586 auto-black path uses it as the waterfall black/low point.
     # Pass the frame's measured floor (min raw) for faithful emulation.
     w = len(intens)
+    total = w if total_bins is None else int(total_bins)
     # FrameLowFreq/BinBandwidth are FlexLib "VitaFrequency" = Hz * 2^20. AE >= #4412
     # decodes that format UNCONDITIONALLY (VitaTileFrequency.h) — the old magnitude
     # heuristic that let plain Hz through is gone, so plain Hz now lands ~2^20 low
     # and every row maps off-screen (waterfall black while the pan stays correct).
     low_raw = int(round(low_hz * 1048576))
     binbw_raw = int(round(binbw_hz * 1048576))
-    sub = struct.pack(">qqIHHIIHH", low_raw, binbw_raw, 100, w, 1, timecode, auto_black, w, 0)
+    # low_hz is the FRAME's low edge (bin 0), NOT this segment's — AE stores it
+    # once from whichever datagram opens the frame (wfFrame.reset) and derives
+    # the frame's high edge from it, so a per-segment value would skew the axis
+    # whenever segments arrived out of order.
+    sub = struct.pack(">qqIHHIIHH", low_raw, binbw_raw, 100, w, 1, timecode,
+                      auto_black, total, first_bin)
     payload = sub + struct.pack(">%dh" % w, *intens)       # signed int16, AE reads /128.0
     return vita_header(stream_id, PCC_WF, seq, len(payload)) + payload
+
+
+_UDP_MAXDGRAM = None
+
+
+def udp_maxdgram():
+    """Largest UDP payload this host will actually send in ONE datagram.
+
+    NOT the 65507-byte IP ceiling: macOS ships net.inet.udp.maxdgram at 9216
+    and sendto() past it raises EMSGSIZE. Cached — it is a boot-time constant.
+    """
+    global _UDP_MAXDGRAM
+    if _UDP_MAXDGRAM is None:
+        limit = 65507
+        if sys.platform == "darwin":
+            limit = 9216                       # the macOS default, if the read fails
+            try:
+                out = subprocess.run(["sysctl", "-n", "net.inet.udp.maxdgram"],
+                                     capture_output=True, text=True, timeout=2)
+                limit = int(out.stdout.strip()) or limit
+            except (OSError, ValueError, subprocess.SubprocessError):
+                pass
+        _UDP_MAXDGRAM = limit
+    return _UDP_MAXDGRAM
+
+
+def bins_per_packet():
+    """How many bins fit in ONE datagram.
+
+    Measured from the real builders rather than guessed, because guessing is
+    what hurt: 16384 bins in a single datagram made sendto raise EMSGSIZE, the
+    stream loop broke out of its send and the panadapter went off the air until
+    the gate was restarted (2026-08-31). On macOS's 9216-byte limit this comes
+    out at 4576.
+    """
+    overhead = max(len(fft_packet(0, 0, [], 0)),
+                   len(wf_packet(0, 0, [], 0.0, 1.0, 0)))
+    return max(64, (udp_maxdgram() - overhead) // 2)
+
+
+# A frame's bin count rides in a uint16 in both sub-headers, so 65535 is the
+# protocol ceiling. The practical ceiling is lower: every bin costs two bytes
+# in each of the FFT and waterfall streams on every frame, so 16384 bins at
+# 20 fps is already ~1.3 MB/s. That is the finest setting worth offering, and
+# it is a power of two so it divides the span cleanly.
+PAN_BIN_CEILING = 16384
+
+
+def max_pan_bins():
+    """How many bins one pan/waterfall FRAME can carry.
+
+    No longer the datagram limit: a frame is segmented across as many datagrams
+    as it needs (see bins_per_packet), and AE reassembles them by start_bin —
+    PanadapterStream.cpp has carried FrameAssembler/WaterfallFrame for exactly
+    this since the protocol was written. Capping a frame at one datagram was
+    self-imposed, and it pinned macOS hosts at 4096 bins.
+    """
+    return PAN_BIN_CEILING
 
 
 def meter_packet(stream_id, seq, meter_id, dbm):
@@ -799,6 +877,7 @@ class Radio:
         self.vita_dest = None
         self._ae_drive_at = 0.0      # when AE last drove the tune (suppresses radio->AE echo)
         self._radio_sync_at = 0.0    # last radio->AE dial-sync check
+        self._span_sync_at = 0.0     # last radio->AE span-sync check
         self.run = True
         self.send_lock = threading.Lock()   # serialize TCP writes: stream thread (status) vs command thread (replies)
         self.streaming = False
@@ -867,6 +946,7 @@ class Radio:
         self.qsk = False             # full break-in (RX between elements); AE sets via cwx qsk_enabled
         self.enabled = True          # "power": when False, stop advertising (radio drops off AE)
         self.last_vfo_dbm = -130.0   # last level at the VFO — drives the rack strip's signal meter
+        self.last_noise_dbm = None   # floor the signal was measured against, when the adapter separates them
         # remote_audio_rx stream state
         self.audio_stream_id = None
         self.audio_stop = threading.Event()
@@ -913,6 +993,11 @@ class Radio:
                 "freq": round(self.slice_freq, 5), "mode": self.slice_mode, "tx": self.tx_on,
                 "pattern": self.pattern, "power_w": round(self.tx_power_w),
                 "meter_dbm": round(self.last_vfo_dbm, 1),
+                "noise_dbm": (round(self.last_noise_dbm, 1)
+                              if self.last_noise_dbm is not None else None),
+                "snr_db": (round(self.last_vfo_dbm - self.last_noise_dbm, 1)
+                           if self.last_noise_dbm is not None
+                           and self.last_vfo_dbm > -140.0 else None),
                 "slices": len(self.slices), "max_slices": self.max_slices}
 
     def dbm_to_pixel(self, dbm):
@@ -922,6 +1007,25 @@ class Radio:
     def dbm_to_wf_raw(self, dbm):
         frac = max(0.0, min(1.0, (dbm - self.min_dbm) / (self.max_dbm - self.min_dbm)))
         return int(round((WF_FLOOR_VAL + frac * (WF_PEAK_VAL - WF_FLOOR_VAL)) * 128))
+
+    # Whole-frame versions of the two converters above. At 4096 bins and 20 fps
+    # the per-bin Python calls cost ~164k/s; the 16384-bin ceiling would make it
+    # 650k/s and the stream loop has a frame budget to hold. numpy does the same
+    # arithmetic on the whole array — np.rint is half-to-even, matching round().
+    def dbm_to_pixels(self, levels):
+        if _np is None:
+            return [self.dbm_to_pixel(d) for d in levels]
+        a = _np.asarray(levels, dtype=_np.float64)
+        p = (self.max_dbm - a) / (self.max_dbm - self.min_dbm) * (self.y_pixels - 1)
+        return _np.clip(_np.rint(p), 0, self.y_pixels - 1).astype(_np.int64).tolist()
+
+    def dbm_to_wf_raws(self, levels):
+        if _np is None:
+            return [self.dbm_to_wf_raw(d) for d in levels]
+        a = _np.asarray(levels, dtype=_np.float64)
+        frac = _np.clip((a - self.min_dbm) / (self.max_dbm - self.min_dbm), 0.0, 1.0)
+        raw = _np.rint((WF_FLOOR_VAL + frac * (WF_PEAK_VAL - WF_FLOOR_VAL)) * 128)
+        return raw.astype(_np.int64).tolist()
 
     def discovery_loop(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -1251,6 +1355,26 @@ class Radio:
             self.emit_slice_status(conn, idx)
             self.emit_meter_status(conn)                   # (re)define S-meters incl. the new slice
             self.emit_pan_status(conn, pid)                # centre this pan/waterfall on its slice
+        elif c.startswith("display pan rfgain_info"):
+            # AE asks each panadapter for its RF-gain travel and sizes the ANT
+            # panel's slider from the reply: body is "low,high,step" in dB.
+            # UNANSWERED IS NOT HARMLESS — AE then keeps the Flex 6000 default
+            # of -8..32 step 8 (AetherSDR PanadapterModel), five positions on a
+            # scale unrelated to the actual front end, so every gain the
+            # operator picks lands somewhere the device never agreed to. An
+            # adapter opts in by implementing gain_range(); the rest reply empty
+            # and AE keeps its default, exactly as before.
+            rng = None
+            if self.adapter is not None and hasattr(self.adapter, "gain_range"):
+                try:
+                    rng = self.adapter.gain_range()
+                except Exception as e:
+                    log("[adapter] gain_range error:", e)
+            if rng:
+                lo, hi, step = int(rng[0]), int(rng[1]), int(rng[2])
+                self.reply(conn, seq, f"{lo},{hi},{max(1, step)}")
+            else:
+                self.reply(conn, seq)
         elif c.startswith("display pan set"):
             kvs = parse_kvs(c)
             pid = None                                     # which panadapter this set targets
@@ -1265,15 +1389,24 @@ class Radio:
             if "min_dbm" in kvs: self.min_dbm = float(kvs["min_dbm"])
             if "max_dbm" in kvs: self.max_dbm = float(kvs["max_dbm"])
             # AE's RF-gain slider -> a real adapter's front-end gain (e.g. the
-            # HPSDR/Radioberry LNA). Optional seam: no-op unless the adapter
-            # implements set_gain. AE sends rfgain 0..100.
+            # HPSDR/Radioberry LNA, or the SDR front end behind the soapy
+            # adapter). Optional seam: no-op unless the adapter implements
+            # set_gain.
+            #
+            # ⚠ THE VALUE IS dB, NOT 0..100. AE sends the operator's setting in
+            # the range the adapter advertised via rfgain_info above
+            # (AetherSDR IRadioBackend::setPanRfGain -> RadioModel's
+            # `display pan set %1 rfgain=%2`). This comment used to say 0..100,
+            # and the one adapter that implemented the seam rescaled against
+            # that, which quietly divided every gain the operator chose.
             if "rfgain" in kvs and self.adapter is not None \
                     and hasattr(self.adapter, "set_gain"):
                 try:
                     self.adapter.set_gain(float(kvs["rfgain"]))
                 except Exception as e:
                     log("[adapter] set_gain error:", e)
-            if "bandwidth" in kvs:
+            span_requested = "bandwidth" in kvs
+            if span_requested:
                 self._set_pan_span_hz(float(kvs["bandwidth"]) * 1e6)
             zoom_changed = self._handle_pan_zoom(pid, kvs)
             # Retune THIS panadapter by absolute centre= or by band= (AE's band buttons).
@@ -1298,7 +1431,16 @@ class Radio:
                     self.center_mhz = new_center           # no pan id: legacy radio-global behaviour
                 self._sync_active_slice()
             self.reply(conn, seq)
-            if pan is not None and (new_center is not None or zoom_changed):
+            # A bandwidth= is re-announced even when nothing else moved. The
+            # adapter may have SNAPPED the request to a rate its hardware can
+            # run, or deferred it to its reader thread — either way AE would
+            # otherwise keep drawing its frequency axis at the width it asked
+            # for while the bins it receives cover the width the radio actually
+            # has. That mismatch is the axis error current_span_hz exists to
+            # prevent; the span sync in stream_loop re-announces again once a
+            # deferred change lands.
+            if pan is not None and (new_center is not None or zoom_changed
+                                    or span_requested):
                 self.emit_pan_status(conn, pid)            # re-announce the pan's new centre to AE
                 sidx = pan.get("slice")
                 if new_center is not None and sidx is not None and sidx in self.slices:
@@ -1646,6 +1788,85 @@ class Radio:
             except Exception:
                 pass
         return self.span_mhz
+
+    def _sync_span(self):
+        """Adopt the span the adapter is ACTUALLY running, and tell AE.
+
+        An adapter applies a rate change on its own reader thread, so the new
+        width lands after the command that asked for it was already answered —
+        set_span deliberately returns the rate running at the time rather than
+        the request (IRadioBackend.h: "Callers must not assume the requested
+        value was taken"). Nothing else would ever correct AE, and a pan
+        labelled with the old span over new data is the axis error
+        current_span_hz was added to prevent.
+
+        Returns True if the span moved.
+        """
+        a = getattr(self, "adapter", None)
+        if not hasattr(a, "current_span_hz"):
+            return False
+        shz = a.current_span_hz()
+        if not shz or abs(shz - self.span_mhz * 1e6) <= 1.0:
+            return False
+        was = self.span_mhz
+        self.span_mhz = float(shz) / 1e6
+        if self.conn is not None:
+            self.emit_pan_status(self.conn)
+        log(f"[radio-wins] span {was:.6f} -> {self.span_mhz:.6f} MHz "
+            f"({(self.span_mhz * 1e6) / max(1, self.bins):.1f} Hz/bin)"
+            f" — re-advertised to AE")
+        return True
+
+    def resolution(self):
+        """Current panadapter geometry: bin width = span / bins."""
+        span_hz = self.span_mhz * 1e6
+        a = getattr(self, "adapter", None)
+        rates = a.supported_rates() if hasattr(a, "supported_rates") else []
+        return {
+            "bins": self.bins,
+            "max_bins": max_pan_bins(),
+            "span_hz": round(span_hz, 1),
+            "bin_hz": round(span_hz / max(1, self.bins), 3),
+            "samp_rate": round(float(a.samp_rate), 1) if hasattr(a, "samp_rate") else None,
+            "rates": [int(round(r)) for r in rates],
+            "can_set_rate": hasattr(a, "set_samp_rate"),
+        }
+
+    def set_resolution(self, bins=None, samp_rate_hz=None):
+        """Operator resolution knob. Two independent ways to get finer bins:
+
+          * more bins over the same span — a pure FFT size change, free, the
+            radio is never touched;
+          * a narrower span, i.e. a lower device sample rate — the adapter
+            stops and restarts its stream, and only rates the device actually
+            supports are used (the request is snapped; see set_samp_rate).
+
+        AE learns the geometry from the pan status — bandwidth and x_pixels are
+        both advertised there — so this MUST re-emit it. Changing either without
+        re-emitting leaves AE drawing the old grid over the new data, which is
+        the same class of axis error current_span_hz was added to fix.
+        """
+        if bins is not None:
+            b = max(64, min(max_pan_bins(), int(bins)))   # a frame is one datagram
+            if b != self.bins:
+                log(f"[ctl] bins {self.bins} -> {b}")
+                self.bins = b
+        if samp_rate_hz is not None:
+            a = getattr(self, "adapter", None)
+            if hasattr(a, "set_samp_rate"):
+                applied = a.set_samp_rate(float(samp_rate_hz))
+                if applied:
+                    self._set_pan_span_hz(applied)
+                    log(f"[ctl] sample rate -> {applied:.0f} S/s "
+                        f"(span {self.span_mhz:.6f} MHz)")
+            else:
+                log("[ctl] this adapter has no sample-rate control")
+        if self.conn is not None:
+            self.emit_pan_status(self.conn)
+        r = self.resolution()
+        log(f"[ctl] resolution: {r['bins']} bins over {r['span_hz']/1e6:.6f} MHz "
+            f"= {r['bin_hz']:.1f} Hz/bin")
+        return r
 
     def _zoom_span_hz(self, mode):
         caps = getattr(getattr(self, "adapter", None), "capabilities", None)
@@ -2146,8 +2367,14 @@ class Radio:
             iq = a.get_iq(ctx.n, center_hz, span_hz)
             if iq is None:
                 return None
-            from .fft import iq_to_dbm
-            return iq_to_dbm(iq, ctx.n, ctx.min_dbm, ctx.max_dbm)
+            from .fft import iq_to_dbm, dbm_offset_for
+            # Same offset the adapter's S-meter applies, so the pan's dBm axis
+            # and the S-meter cannot disagree — and neither of them moves when
+            # the operator touches the RF gain.
+            return iq_to_dbm(iq, ctx.n, ctx.min_dbm, ctx.max_dbm,
+                             dbm_offset_for(getattr(a, "gain_db", 20.0),
+                                            getattr(a, "dbm_trim", 0.0),
+                                            getattr(a, "dbm_base", None)))
         return a.get_spectrum(ctx, t)
 
     def stream_loop(self):
@@ -2224,6 +2451,8 @@ class Radio:
             #                                                        wall-clock so it JUMPS across a TX gap
             #                                                        (real-radio behaviour -> AE history reproj).
             ctx.min_dbm, ctx.max_dbm = self.min_dbm, self.max_dbm   # track AE's display-pan-set
+            if ctx.n != self.bins:                                 # track a live resolution change
+                ctx.n, ctx.center = self.bins, self.bins // 2      # (ctx is built once, before this loop)
             ctx.floor = self.noise_floor_dbm                        # live (control panel, dBm)
             ctx.sig_level = self.sig_level_dbm
             ctx.noise_color = self.noise_color
@@ -2274,8 +2503,9 @@ class Radio:
                     self.emit_transmit_status()
                 keyed = ctx.cw_keydown if self.pattern == "cw" else self.tx_on
             if levels is not None and tc != last_tc:               # one pan/wf row per waterfall tick
-                pixels = [self.dbm_to_pixel(d) for d in levels]     # generated once; each stacked panadapter
-                intens = [self.dbm_to_wf_raw(d) for d in levels]    # shows it, centred on ITS slice (low_hz).
+                per = bins_per_packet()                            # datagram limit, not the frame limit
+                pixels = self.dbm_to_pixels(levels)                # generated once; each stacked panadapter
+                intens = self.dbm_to_wf_raws(levels)               # shows it, centred on ITS slice (low_hz).
                 wf_ab = self.dbm_to_wf_raw(self.noise_floor_dbm)    # auto-black = the CONFIGURED noise floor,
                 #   not min(intens): a flat pattern (step/impulse/ramp) has min==max, so min(intens) would
                 #   set the black level AT the signal and AE blanks the whole waterfall row. The true floor
@@ -2291,6 +2521,10 @@ class Radio:
                         _pstat["meters"][0] += time.perf_counter() - _t0; _pstat["meters"][1] += 1
                 self.last_vfo_dbm = m.s_meter_dbm if m is not None \
                     else levels[ctx.center]                         # active slice (pan centre) -> rack strip
+                # The floor the signal was measured against, when the adapter
+                # separates them. Their difference is the SNR an antenna change
+                # actually has to move.
+                self.last_noise_dbm = getattr(m, "noise_dbm", None) if m is not None else None
                 # Which pan owns the live scope? The 9700 streams ONLY the
                 # selected/TX receiver's scope, so only that pan gets the real
                 # pixels; a SUB pan (non-selected receiver) shows a floor until
@@ -2308,8 +2542,15 @@ class Radio:
                         live = (pid != sub_pid)                     # non-SUB pan = the selected rx = live
                         px = pixels if live else floor_pix
                         it = intens if live else floor_int
-                        s.sendto(fft_packet(pid, fseq & 0xF, px, fi), dest); fseq += 1
-                        s.sendto(wf_packet(pan["wf_id"], wseq & 0xF, it, low_hz, binbw_hz, tc, auto_black=wf_ab), dest); wseq += 1
+                        # One frame, as many datagrams as it takes. `per` is
+                        # the host's datagram limit; AE stitches by start_bin.
+                        for off in range(0, len(px), per):
+                            s.sendto(fft_packet(pid, fseq & 0xF, px[off:off + per],
+                                                fi, off, len(px)), dest); fseq += 1
+                        for off in range(0, len(it), per):
+                            s.sendto(wf_packet(pan["wf_id"], wseq & 0xF, it[off:off + per],
+                                               low_hz, binbw_hz, tc, auto_black=wf_ab,
+                                               first_bin=off, total_bins=len(it)), dest); wseq += 1
                     # Per-slice S-meter. A live adapter measures a real level
                     # (m.s_meter_dbm); use it so AE's S-meter tracks actual signal.
                     # Only the sim/pattern engine has no adapter meter -> fall back
@@ -2321,6 +2562,26 @@ class Radio:
                     log("[stream] send error:", e); break
                 fi += 1
                 last_tc = tc
+            # Aether-gate seam: radio -> AE SPAN sync. An adapter applies a rate
+            # change on its own reader thread (AE's pan zoom, or the control
+            # panel), so the new width lands AFTER the command that asked for it
+            # has already been answered. Nothing else would ever tell AE, and a
+            # pan labelled with the old span over new data is exactly the axis
+            # error current_span_hz was added to prevent.
+            #
+            # NOT held off after an AE-driven command the way the dial sync below
+            # is: the span IS the frequency axis, and drawing it wrong for two
+            # seconds is worse than a ping-pong that cannot happen here — the
+            # value we report back is the one AE asked for, snapped to a rate the
+            # device can actually run.
+            if (self.adapter is not None and self.conn is not None
+                    and time.time() - self._span_sync_at > 0.5):
+                self._span_sync_at = time.time()
+                try:
+                    self._sync_span()        # radio -> AE: adopt the width the IQ really has
+                except Exception as e:
+                    log("[adapter] span sync failed:", e)
+
             # Aether-gate seam: radio -> AE dial sync. If the rig was tuned at
             # its front panel (CI-V transceive or the adapter's slow poll), the
             # active slice + its pan follow, and AE is told via status. Held
@@ -2414,6 +2675,10 @@ class Radio:
                         f"| iter {_pstat['total'][0]/n*1000:6.2f}ms avg | IQ {_fr}")
                     _pstat = {k: [0.0, 0] for k in _pstat}
                     _plast = _tn
+        # emit_pan_status only starts a loop when this is False. Leaving it set
+        # meant any send error stopped the panadapter PERMANENTLY — the status
+        # said "streaming" and nothing would ever restart it.
+        self.streaming = False
         log("[stream] stopped")
 
 
@@ -2710,6 +2975,8 @@ function render(d){
   h+='<div class=grid>';
   var M=d.meters||{},S=d.scope||{},F=d.flags||{},C=d.counters||{};
   h+='<div class=card><h2>s-meter</h2>'+row('signal',(M.s_meter_dbm!=null?(M.s_meter_dbm+' dBm'):null))
+     +row('noise',(M.noise_dbm!=null?(M.noise_dbm+' dBm'):null))
+     +row('snr',(M.snr_db!=null?(M.snr_db+' dB'):null))
      +row('s-unit',M.s_unit)+row('raw',M.raw)+'</div>';
   var scDot=(S.live?'on':(S.fps===0?'warn':'off'));
   var scTxt=(S.live?('LIVE '+S.fps+' fps'):(S.fps===0?'STALLED':'&mdash;'));
@@ -2752,6 +3019,18 @@ h2{{color:#5cf}} label{{display:block;margin:16px 0 4px}} select,input[type=rang
     <div><span id=dot style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#888;margin-right:7px"></span><span id=conn style="font-weight:bold">…</span></div>
     <div id=streamstat style="font-size:12px;color:#9ab;margin-top:2px">&nbsp;</div>
   </div>
+</div>
+<div id=resbox style="background:#15202b;border:1px solid #243;border-radius:6px;padding:10px 12px;margin:0 0 14px">
+  <div style="display:flex;align-items:baseline;justify-content:space-between">
+    <b style="color:#5cf">Panadapter resolution</b><span class=v id=resv style="font-size:15px">&mdash;</span>
+  </div>
+  <div style="display:flex;gap:14px;margin-top:8px">
+    <div style="flex:1"><label style="margin:0 0 3px;font-size:12px;color:#9ab">FFT bins</label>
+      <select id=binsel style="width:100%" onchange="setRes()"></select></div>
+    <div style="flex:1" id=ratewrap><label style="margin:0 0 3px;font-size:12px;color:#9ab">Span (sample rate)</label>
+      <select id=ratesel style="width:100%" onchange="setRes()"></select></div>
+  </div>
+  <div id=resnote style="font-size:12px;color:#789;margin-top:7px">&nbsp;</div>
 </div>
 <label>Pattern</label><select id=pat onchange=upd()>{options}</select>
 <div id=hint style="background:#15202b;border-left:3px solid #5cf;padding:8px 11px;margin:8px 0;font-size:13px;color:#bcd;line-height:1.45"></div>
@@ -2904,8 +3183,55 @@ function renderGo(){{
   if(paused){{b.innerHTML='&#9654; Go';b.style.background='#3a7';}}
   else{{b.innerHTML='&#9632; Stop';b.style.background='#c33';}}
 }}
+// ---- panadapter resolution: bin width = span / bins ----
+// Two knobs. Bins is a pure FFT size (free). Sample rate IS the span on an IQ
+// adapter, so narrowing it restarts the radio's stream — hence the 'applying'
+// state and the repaint lock, so a status poll can't stomp a pending change.
+var BINCHOICES=[1024,2048,4096,8192,16384];
+var resBusy=false;
+function fmtHz(h){{return h>=1e6?(h/1e6).toFixed(3)+' MHz':(h/1e3).toFixed(1)+' kHz';}}
+function fmtBin(h){{return h>=1000?(h/1000).toFixed(2)+' kHz':h.toFixed(1)+' Hz';}}
+function fillSel(sel,vals,label){{
+  if(sel.options.length===vals.length)return;
+  sel.innerHTML='';
+  vals.forEach(function(n){{var o=document.createElement('option');o.value=n;o.text=label(n);sel.appendChild(o);}});
+}}
+function paintRes(r){{
+  if(resBusy)return;
+  // A frame is one UDP datagram, so the host caps the bin count (macOS: 4576).
+  // Offering a value the sender cannot transmit takes the panadapter off the air.
+  var cap=r.max_bins||4576;
+  var bins=BINCHOICES.filter(function(n){{return n<=cap;}});
+  if(bins.indexOf(r.bins)<0){{bins.push(r.bins);bins.sort(function(a,b){{return a-b;}});}}
+  fillSel(document.getElementById('binsel'),bins,function(n){{return n;}});
+  var rw=document.getElementById('ratewrap'),rates=r.rates||[];
+  var haveRates=!!(r.can_set_rate&&rates.length);
+  rw.style.display=haveRates?'':'none';
+  if(haveRates){{
+    fillSel(document.getElementById('ratesel'),rates,function(n){{return fmtHz(n);}});
+    if(r.samp_rate)document.getElementById('ratesel').value=Math.round(r.samp_rate);
+  }}
+  document.getElementById('binsel').value=r.bins;
+  document.getElementById('resv').textContent=fmtBin(r.bin_hz)+' / bin';
+  document.getElementById('resnote').textContent=r.bins+' bins across '+fmtHz(r.span_hz)
+    +(r.bins>=cap?'  \u2014 bins maxed for one UDP frame; narrow the span for finer':'');
+}}
+function setRes(){{
+  resBusy=true;
+  var p='bins='+document.getElementById('binsel').value;
+  var rs=document.getElementById('ratesel');
+  if(document.getElementById('ratewrap').style.display!=='none'&&rs.value)p+='&rate='+rs.value;
+  document.getElementById('resnote').textContent='applying…';
+  fetch('/resolution?'+p).then(r=>r.json()).then(function(r){{
+    resBusy=false;
+    if(r.error){{document.getElementById('resnote').textContent=r.error;return;}}
+    paintRes(r);
+  }}).catch(function(e){{resBusy=false;
+    document.getElementById('resnote').textContent='failed: '+e;}});
+}}
 function pollStatus(){{fetch('/status').then(r=>r.json()).then(s=>{{
   paused=s.paused;renderGo();
+  if(s.res)paintRes(s.res);
   var dot=document.getElementById('dot'),conn=document.getElementById('conn'),ss=document.getElementById('streamstat');
   if(!s.connected){{dot.style.background='#888';conn.textContent='waiting for AetherSDR…';ss.innerHTML='&nbsp;';}}
   else{{
@@ -3025,6 +3351,14 @@ def start_control_server(radio, port):
                     "pattern": radio.pattern,
                     "tx": radio.tx_on,
                     "meter_dbm": round(radio.last_vfo_dbm, 1),
+                    "noise_dbm": (round(radio.last_noise_dbm, 1)
+                                  if radio.last_noise_dbm is not None else None),
+                    "snr_db": (round(radio.last_vfo_dbm - radio.last_noise_dbm, 1)
+                               if radio.last_noise_dbm is not None
+                               and radio.last_vfo_dbm > -140.0 else None),
+                    "res": radio.resolution(),
+                    "audio_backlog_ms": (round(radio.adapter.audio_backlog_ms(), 1)
+                                         if hasattr(radio.adapter, "audio_backlog_ms") else None),
                 })
             # ---- radio diagnostics: 'what the gate sees from the radio' ----
             if u.path == "/diagnostics":
@@ -3131,6 +3465,76 @@ def start_control_server(radio, port):
                 with open(fp, "rb") as f:
                     self.wfile.write(f.read())
                 return
+            # ---- device controls the Flex protocol has no verb for --------
+            # Antenna port, bias-T, the MW/DAB notches, HDR, AGC setpoint. None
+            # of these can travel as "display pan set" wire text, so the gate's
+            # own surface is the only place they can reach the operator.
+            #   GET /device                       -> what this device offers
+            #   GET /device/set?antenna=Antenna B
+            #   GET /device/set?key=biasT_ctrl&value=true
+            if u.path == "/device":
+                a = radio.adapter
+                if not hasattr(a, "device_controls"):
+                    return self._json({"error": "adapter has no device controls"})
+                return self._json(a.device_controls())
+            if u.path == "/device/set":
+                a = radio.adapter
+                q = urllib.parse.parse_qs(u.query)
+                if not hasattr(a, "device_controls"):
+                    return self._json({"error": "adapter has no device controls"})
+                if "antenna" in q and hasattr(a, "set_antenna"):
+                    a.set_antenna(q["antenna"][0])
+                    log(f"[ctl] antenna -> {q['antenna'][0]}")
+                if "key" in q and "value" in q and hasattr(a, "set_device_setting"):
+                    a.set_device_setting(q["key"][0], q["value"][0])
+                    log(f"[ctl] {q['key'][0]} -> {q['value'][0]}")
+                # The reader thread applies these; give it a beat so the
+                # read-back below reflects the write rather than the old value.
+                time.sleep(0.35)
+                return self._json(a.device_controls())
+
+            # ---- panadapter resolution (bins and/or device sample rate) ----
+            # Its own route, not /set: changing the rate restarts the adapter's
+            # stream, so it can block for a second or two and it answers with
+            # the geometry that actually landed rather than a bare "ok".
+            # ---- dBm calibration trim -------------------------------------
+            # GET /calibrate            -> current trim + what it resolves to
+            # GET /calibrate?trim=-12   -> shift both scales 12 dB down
+            #
+            # Its own route because it is the one number an operator can only
+            # set by comparing against a signal of known strength; there is no
+            # way to derive it from inside the gate.
+            if u.path == "/calibrate":
+                a = radio.adapter
+                if a is None or not hasattr(a, "dbm_trim"):
+                    return self._json({"error": "adapter has no dBm calibration"})
+                q = urllib.parse.parse_qs(u.query)
+                if "trim" in q:
+                    try:
+                        a.dbm_trim = float(q["trim"][0])
+                    except (ValueError, TypeError) as e:
+                        return self._json({"error": f"bad value: {e}"})
+                    log(f"[ctl] dBm trim -> {a.dbm_trim:+.1f} dB")
+                from .fft import DBFS_TO_DBM, GAIN_REF_DB, dbm_offset_for
+                gain = float(getattr(a, "gain_db", GAIN_REF_DB))
+                base = getattr(a, "dbm_base", DBFS_TO_DBM)
+                return self._json({
+                    "trim_db": float(a.dbm_trim),
+                    "base_db": base,
+                    "driver": getattr(a, "driver", None),
+                    "gain_db": gain,
+                    "gain_ref_db": GAIN_REF_DB,
+                    "total_offset_db": dbm_offset_for(gain, a.dbm_trim, base),
+                })
+
+            if u.path == "/resolution":
+                q = urllib.parse.parse_qs(u.query)
+                try:
+                    return self._json(radio.set_resolution(
+                        bins=int(q["bins"][0]) if "bins" in q else None,
+                        samp_rate_hz=float(q["rate"][0]) if "rate" in q else None))
+                except (ValueError, TypeError) as e:
+                    return self._json({"error": f"bad value: {e}"})
             if u.path == "/set":
                 q = urllib.parse.parse_qs(u.query)
                 try:

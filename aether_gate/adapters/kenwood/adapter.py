@@ -77,6 +77,7 @@ class KenwoodAdapter(RadioAdapter):
                                  center_hz=14_100_000.0, model=adv,
                                  serial=serial, station=station,
                                  direct_samp=direct_samp, agc=agc)
+        self.dbm_base = self._sdr.dbm_base   # the pan's dBm anchor is the dongle's
 
         # bands= advertised to AE (radio-declared-bands). tx_capable reflects the
         # opt-in enable_tx flag, NOT a hardcoded "real transceiver" guess: no PTT is

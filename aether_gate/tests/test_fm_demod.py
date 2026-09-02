@@ -453,7 +453,9 @@ def test_panadapter_bins_line_up_with_ae_pan_centre():
     t = np.arange(n) / fs
     # a carrier at tone_hz, expressed in the HARDWARE's baseband
     blk = np.exp(2j * np.pi * (tone_hz - hw_center) * t).astype(np.complex128)
-    a._latest = blk
+    # The pan reads the block RING, not _latest — that is what lets one FFT span
+    # more than a single readStream block. Stage it the way the reader does.
+    a._pan_ring.append(blk)
 
     out = a.get_iq(n, ae_center, fs)
     assert out is not None

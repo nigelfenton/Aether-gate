@@ -1,8 +1,13 @@
 name: tests
 
-# Run the offline test suites on every push/PR. They are stdlib-only (no radio,
-# no network, no AE) — the pyserial/SoapySDR imports are deferred, so nothing to
-# pip-install. Fast and hermetic.
+# Run the offline test suites on every push/PR (no radio, no network, no AE).
+#
+# Two jobs on purpose. `test` is stdlib-only with no pip step — the
+# pyserial/SoapySDR imports are deferred, so it proves the core needs nothing
+# installed. Its module list is HAND-MAINTAINED: a new stdlib suite has to be
+# added there by hand or it is silently skipped. `pytest` installs numpy and
+# pytest and collects the whole directory, which is the only way the numpy
+# suites and the modules without a __main__ runner (test_wf_packet) get run.
 
 on:
   push:
@@ -44,8 +49,29 @@ jobs:
         shell: bash
         run: |
           set -e
-          for t in test_smoke test_hamlib test_icom_teardown test_icom7300 test_tune_clamp test_civ_seqtrack test_icom_audio test_ic9700_mode test_ic9700_dispatch test_radio_wins test_ic9700_tx test_mox_ptt test_ic9700_power test_busy_refuse test_ic9700_settings test_hpsdr test_demod_equivalence test_updater test_dossier; do
+          for t in test_smoke test_hamlib test_icom_teardown test_icom7300 test_tune_clamp test_civ_seqtrack test_icom_audio test_ic9700_mode test_ic9700_dispatch test_radio_wins test_ic9700_tx test_mox_ptt test_ic9700_power test_busy_refuse test_ic9700_settings test_hpsdr test_demod_equivalence test_updater test_dossier test_env_config test_dbm_base test_audio_backlog; do
             echo "::group::$t"
             python -m aether_gate.tests.$t
             echo "::endgroup::"
           done
+
+  pytest:
+    name: pytest · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install the test dependencies
+        run: python -m pip install numpy pytest
+
+      - name: Run the whole suite
+        run: python -m pytest aether_gate/tests -q

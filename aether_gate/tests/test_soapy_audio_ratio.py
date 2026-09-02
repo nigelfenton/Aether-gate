@@ -43,7 +43,7 @@ def test_audio_survives_realtime_supply_at_non_multiple_rate():
 
     def top_up():
         nonlocal t0, supply
-        while supply > 0 and len(a._audio_q) < a._audio_q.maxlen:
+        while supply > 0 and len(a._audio_q) < 64:        # the test feeds the queue directly
             n = min(block, supply)
             t = (t0 + np.arange(n)) / SAMP
             a._audio_q.append(

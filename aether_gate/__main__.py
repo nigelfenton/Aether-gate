@@ -23,6 +23,19 @@ from .adapters import get_adapter, available
 from .adapters.icom.radios import get as get_icom, lan_radios
 
 
+# How long adapter.close() gets before we stop waiting for it. Generous enough
+# for a healthy USB teardown or an Icom 0x05 disconnect round-trip, short enough
+# that a stop still feels like a stop.
+SHUTDOWN_GRACE_S = 5.0
+
+
+def _force_exit():
+    log(f"cleanup did not finish in {SHUTDOWN_GRACE_S:.0f}s - exiting anyway. A "
+        f"driver is wedged; for an SDRplay device the API service may need a "
+        f"restart before the next start.")
+    os._exit(0)
+
+
 def wants_setup_ui(raw, environ=None):
     """Should a bare launch open the Radio Setup page rather than start a gate?
 
@@ -82,10 +95,14 @@ def build_adapter(name, args):
         return cls(pattern=args.pattern, model=args.model,
                    serial=args.serial, station=station)
     if name == "soapy":
-        return cls(driver=args.soapy_driver, device_args=args.soapy_args,
-                   samp_rate=args.samp_rate, gain_db=args.gain,
-                   model=args.model, serial=args.serial, station=args.station,
-                   direct_samp=args.direct_samp, agc=args.agc)
+        a = cls(driver=args.soapy_driver, device_args=args.soapy_args,
+                samp_rate=args.samp_rate, gain_db=args.gain,
+                model=args.model, serial=args.serial, station=args.station,
+                direct_samp=args.direct_samp, agc=args.agc)
+        a.dbm_trim = args.dbm_trim         # survives a restart; /calibrate?trim= is live-only
+        if args.dbm_base is not None:
+            a.dbm_base = args.dbm_base     # operator-measured anchor beats the driver default
+        return a
     if name == "icom9700":
         # give the 9700 a distinct identity unless the user overrode the shared defaults
         row = get_icom(args.icom_model)
@@ -193,6 +210,14 @@ def main(argv=None):
     ap.add_argument("--soapy-args", default="", help="soapy adapter: extra device args, comma kv (e.g. serial=00000001)")
     ap.add_argument("--samp-rate", type=float, default=2_040_000, help="soapy adapter: sample rate (Hz)")
     ap.add_argument("--gain", type=float, default=40.0, help="soapy adapter: RX gain dB (ignored if --agc)")
+    ap.add_argument("--dbm-trim", type=float, default=0.0,
+                    help="dB to add to every level (panadapter AND S-meter). The "
+                         "dBFS->dBm anchor depends on the front end and its antenna, "
+                         "so it can only be set against a reference; see GET /calibrate")
+    ap.add_argument("--dbm-base", type=float, default=None,
+                    help="soapy adapter: the dBFS->dBm anchor for this front end, replacing "
+                         "the per-driver default (core.fft.DBFS_TO_DBM_BY_DRIVER). For a "
+                         "device you have measured against a reference receiver")
     ap.add_argument("--agc", action="store_true", help="soapy adapter: enable hardware AGC")
     ap.add_argument("--direct-samp", default=None, help="soapy adapter: RTL direct-sampling mode (Q=2 for HF on non-V4)")
     # Icom adapter options
@@ -259,8 +284,11 @@ def main(argv=None):
     # 0x05 disconnect and strand a phantom session, the exact bug fixed for
     # Ctrl-C. Turn SIGTERM into the SAME graceful path as Ctrl-C by raising
     # KeyboardInterrupt into the main thread: it unwinds through the try/finally
-    # below, so close() (→0x05) always runs. Best-effort — signal is a no-op on
-    # platforms lacking SIGTERM (Windows delivers it for our own Popen kills).
+    # below, so close() (→0x05) always runs. Best-effort: on Windows the name
+    # signal.SIGTERM exists but nothing ever delivers it — Popen.send_signal
+    # (SIGTERM) is TerminateProcess(), which kills without running this handler
+    # OR the finally. There, Ctrl-C is the only graceful stop, and the shutdown
+    # watchdog below never gets to run.
     def _graceful(signum, frame):
         raise KeyboardInterrupt
     try:
@@ -319,10 +347,30 @@ def main(argv=None):
             pass
         log("bye")
     finally:
+        # ⚠ A WEDGED DRIVER MUST NOT BE ABLE TO HOLD THE EXIT.
+        #
+        # Measured 2026-08-31 on an RSPdx that had left the USB bus: SIGTERM was
+        # delivered and "bye" was logged, then the process sat in
+        # adapter.close() for over three minutes, because SoapySDRPlay3's stream
+        # teardown never returns for a device that is no longer there. Two
+        # further SIGTERMs did nothing — the main thread was blocked inside a C
+        # call, so _graceful could never run; a Python signal handler only runs
+        # between bytecodes. It took SIGKILL, which skips ReleaseDevice and
+        # leaves the SDRplay API service holding a stale device: exactly the
+        # state that then needs a service restart to clear.
+        #
+        # Cleanup is best-effort by nature, so bound it. Exit 0, not 1: a stop
+        # that had to be forced is still a STOP, and a supervisor running
+        # Restart=on-failure must not bounce us straight back into the same
+        # wedged driver.
+        _watchdog = threading.Timer(SHUTDOWN_GRACE_S, _force_exit)
+        _watchdog.daemon = True
+        _watchdog.start()
         try:
             adapter.close()
         except Exception:
             pass
+        _watchdog.cancel()
 
 
 if __name__ == "__main__":
