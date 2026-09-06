@@ -4,6 +4,39 @@ All notable changes to Aether-gate. Newest first.
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-09-06
+
+A single fix, on top of 0.5.0: a gate whose radio is absent no longer
+advertises a radio anyway.
+
+### Fixed
+- **A gate with no radio advertised a FLEX-6700 and hung AetherSDR (#41/#42).**
+  `device_lost` was declared on `RadioAdapter` but only ever set by `soapy.py`,
+  so `core/engine.py`'s two guards — refuse an AE connection when the radio is
+  gone, and drop AE rather than serve a dead stream — were dead code for every
+  other adapter. Both read it through `getattr(..., False)`, so they silently
+  did nothing. With a Radioberry powered off the gate came up, logged
+  `board=0x00`, advertised a FLEX-6700, and AE sat on "Connecting to radio…"
+  with a black waterfall and a **full TX surface** — the exact failure
+  `soapy.py`'s own comment says the guard exists to prevent.
+
+  Promoted rather than copied: `base.py` gains `note_device_alive()` and
+  `note_device_silent(reason)`, with the clock measured from the last evidence
+  of *life* rather than the first silent call. The HPSDR adapter now uses the
+  helpers, and `open()` no longer trusts `--radio-ip` blindly — that flag
+  short-circuited the discovery check in the exact configuration every systemd
+  unit ships. Soapy is deliberately left alone: its own detection is richer and
+  it works.
+
+  Verified on the hardware that showed the bug — Radioberry still off, the gate
+  now refuses to start and advertises nothing.
+
+### Note on 0.5.0
+0.5.0 was tagged but never published as a GitHub release, and its entry below
+says the `device_lost` promotion "is still an open PR". It has since merged, and
+is the content of this release. 0.5.1 is therefore the first published release
+since 0.4.3 and carries everything in both.
+
 ## [0.5.0] — 2026-09-02
 
 Headline: the panadapter's advertised bin width is now true, dBm calibration is
