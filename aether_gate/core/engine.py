@@ -948,7 +948,14 @@ class Radio:
         self.last_vfo_dbm = -130.0   # last level at the VFO — drives the rack strip's signal meter
         self.last_noise_dbm = None   # floor the signal was measured against, when the adapter separates them
         # remote_audio_rx stream state
+        # audio_stream_id is the MOST RECENTLY registered RX stream and is kept
+        # for the single-stream case and for logging. The authoritative set is
+        # audio_streams: {type -> sid}. Both remote_audio_rx and dax_rx used to
+        # write audio_stream_id, so arming DAX (WSJT-X) silently overwrote the
+        # speaker stream's id and every frame went to DAX only -- AE went deaf
+        # while WSJT-X stayed healthy (#34).
         self.audio_stream_id = None
+        self.audio_streams = {}      # "remote_audio_rx" | "dax_rx" -> stream id
         self.audio_stop = threading.Event()
         # dax_tx (AE -> gate TX audio, for digital modes incl. AX.25) state.
         # The prime loop decodes AE's VITA float32-stereo packets on this stream id
@@ -1204,6 +1211,7 @@ class Radio:
                 self.tx_mox = False; self.tx_tune = False
                 self.streaming = False; self.ae_peer_ip = None; self.conn = None; self.vita_dest = None
                 self.audio_stop.set(); self.audio_stream_id = None; self.dax_channel = None
+                self.audio_streams = {}
                 self.dax_tx_stream_id = None
                 with self.tx_ring_lock: self.tx_pcm_ring.clear()
                 # Free this client's receivers/panadapters on disconnect, like a real radio.
@@ -1482,6 +1490,7 @@ class Radio:
             if kvs.get("type") == "remote_audio_rx":
                 sid = AUDIO_SID_BASE + self.radio_id
                 self.audio_stream_id = sid
+                self.audio_streams["remote_audio_rx"] = sid
                 self.dax_channel = None
                 self.reply(conn, seq, f"0x{sid:08X}")
                 # Confirming STATUS line — a real Flex emits this; without it AE logs
@@ -1504,6 +1513,7 @@ class Radio:
                 ch = max(1, min(4, ch))
                 sid = DAX_SID_BASE + self.radio_id * 4 + (ch - 1)
                 self.audio_stream_id = sid
+                self.audio_streams["dax_rx"] = sid
                 self.dax_channel = ch
                 self.reply(conn, seq, f"0x{sid:08X}")
                 # The registration status line — must carry our client_handle so AE's
@@ -1530,7 +1540,18 @@ class Radio:
         elif c.startswith("stream remove"):
             for tok in c.split():
                 if tok.lower().startswith("0x"):
-                    if int(tok, 16) == self.audio_stream_id:
+                    sid_rm = int(tok, 16)
+                    # Drop ONLY the stream named. Removing DAX must not stop the
+                    # speaker audio, which is what a single-id teardown did (#34).
+                    for st, s_id in list(self.audio_streams.items()):
+                        if s_id == sid_rm:
+                            del self.audio_streams[st]
+                            if st == "dax_rx":
+                                self.dax_channel = None
+                    if sid_rm == self.audio_stream_id:
+                        self.audio_stream_id = (next(iter(self.audio_streams.values()), None))
+                    # Only stop the audio thread once NOTHING is listening.
+                    if not self.audio_streams:
                         self.audio_stop.set()
                         self.audio_stream_id = None
                         self.dax_channel = None
@@ -2271,6 +2292,7 @@ class Radio:
         last_route = None   # log only when the route/format actually changes
 
         seq      = 0
+        seqs     = {}  # per-stream VITA sequence counters, keyed by stream id (#34)
         sample_t = 0   # phase counter for tone source
         t_start  = time.monotonic()
         amp      = 0.1  # −20 dBFS
@@ -2334,10 +2356,24 @@ class Radio:
                     samples = []
                     for v in mono: samples.extend([v, v])
 
-                try:
-                    s.sendto(audio_packet(stream_id, seq & 0xF, samples, reduced_bw=reduced), dest)
-                except OSError as e:
-                    log("[audio] send error:", e); break
+                # Emit the SAME generated frame to every registered RX stream.
+                # One get_audio() call feeds them all: calling it per stream would
+                # pop the single _audio_q twice and starve the demod -- which is the
+                # contention #34 originally hypothesised, and would become real here.
+                # Each stream carries its OWN sequence counter; a shared one makes AE
+                # see 1-in-N gaps on every stream once a second is armed.
+                targets = dict(self.audio_streams) or (
+                    {"remote_audio_rx": stream_id} if stream_id is not None else {})
+                send_failed = False
+                for st_name, st_sid in targets.items():
+                    n = seqs.get(st_sid, 0)
+                    try:
+                        s.sendto(audio_packet(st_sid, n & 0xF, samples, reduced_bw=reduced), dest)
+                    except OSError as e:
+                        log("[audio] send error:", e); send_failed = True; break
+                    seqs[st_sid] = n + 1
+                if send_failed:
+                    break
 
                 seq += 1
                 # Absolute deadline — prevents accumulated drift
