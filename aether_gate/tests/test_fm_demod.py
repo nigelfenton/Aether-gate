@@ -18,7 +18,8 @@ import pytest
 
 np = pytest.importorskip("numpy")
 
-from aether_gate.adapters.soapy import SoapyAdapter, AUDIO_RATE
+from aether_gate.adapters.soapy import (SoapyAdapter, AUDIO_RATE, FM_PASS_HZ,
+                                        _DC_CLEARANCE_HZ)
 
 
 def _adapter(samp_rate=240_000.0):
@@ -378,7 +379,15 @@ def test_slice_is_never_left_sitting_on_dc():
     a.set_slice(146_500_000.0)
     assert a._retune_to is not None, "slice outside the window should force a retune"
     offset = abs(a._retune_to - 146_500_000.0)
-    assert offset > 0.05 * fs, (
+    # The bound here USED to be 0.05 * samp_rate. That was a proxy for "clear of
+    # the channel" that happened to work while the offset was a quarter of the
+    # rate, and it stopped meaning anything when the offset became a fixed
+    # clearance: at 2.04 MS/s it is 102 kHz, just ABOVE the 100 kHz offset, so a
+    # correctly-offset centre failed a test named "never left sitting on DC"
+    # while sitting 33 channel-widths from DC. The real requirement is that the
+    # spike falls outside the widest channel we demodulate, which is a fixed
+    # number of hertz — so assert that, with margin. (#37)
+    assert offset > 10 * FM_PASS_HZ, (
         f"hardware would centre only {offset:.0f} Hz from the slice — "
         "the demodulator lands on the DC spike")
     # ...but still inside the usable passband
@@ -412,14 +421,16 @@ def test_every_retune_path_respects_the_dc_offset():
     a = SoapyAdapter(driver="none", samp_rate=fs, center_hz=140_000_000.0)
     a._np = np
     a.set_slice(slice_hz)
-    assert abs(a._retune_to - slice_hz) > 0.05 * fs, "set_slice parks on DC"
+    # See test_slice_is_never_left_sitting_on_dc for why this bound is a fixed
+    # clearance rather than a fraction of the sample rate. (#37)
+    assert abs(a._retune_to - slice_hz) >= _DC_CLEARANCE_HZ, "set_slice parks on DC"
 
     # 2. retune() asked for the slice frequency itself
     b = SoapyAdapter(driver="none", samp_rate=fs, center_hz=140_000_000.0)
     b._np = np
     b._slice_hz = slice_hz
     b.retune(slice_hz)
-    assert abs(b._retune_to - slice_hz) > 0.05 * fs, "retune() parks on DC"
+    assert abs(b._retune_to - slice_hz) >= _DC_CLEARANCE_HZ, "retune() parks on DC"
 
     # 3. get_iq() following AE's pan centre onto the slice
     c = SoapyAdapter(driver="none", samp_rate=fs, center_hz=140_000_000.0)
@@ -427,7 +438,7 @@ def test_every_retune_path_respects_the_dc_offset():
     c._slice_hz = slice_hz
     c.get_iq(1024, slice_hz, fs)
     assert c._retune_to is not None
-    assert abs(c._retune_to - slice_hz) > 0.05 * fs, "get_iq parks on DC"
+    assert abs(c._retune_to - slice_hz) >= _DC_CLEARANCE_HZ, "get_iq parks on DC"
 
 
 def test_panadapter_bins_line_up_with_ae_pan_centre():

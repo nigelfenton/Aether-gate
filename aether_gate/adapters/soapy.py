@@ -120,6 +120,20 @@ SSB_BW_HZ = 2700.0          # SSB audio passband width
 SSB_PASS_HZ = 3000.0
 FM_PASS_HZ = 8000.0
 
+# How far offset tuning puts the hardware centre from the slice (see
+# _dc_offset_hz). This is a CLEARANCE, not a fraction of the rate: the DC spike
+# has to sit outside the demodulated channel, and that channel is FM_PASS_HZ
+# wide, not sample-rate wide. 100 kHz is ~12x the widest passband we demodulate
+# and ~33x the SSB one — decisive, with room for a tuner that rounds our
+# request and for the spike's own skirt.
+#
+# It was 0.25 * samp_rate, which is 510 kHz at 2.04 MS/s: ~170x what clearing a
+# 3 kHz channel needs, and every hertz of it came straight off the panadapter as
+# unsampled spectrum the pan still painted (#37). The offset moves the band edge
+# in with it, so the cost of an over-generous offset is a dead band of exactly
+# the same width.
+_DC_CLEARANCE_HZ = 100_000.0
+
 
 def rtl_bufflen(samp_rate, target_s=0.030):
     """USB transfer size (BYTES) giving ~target_s of signal per transfer.
@@ -1025,11 +1039,26 @@ class SoapyAdapter(RadioAdapter):
     def _dc_offset_hz(self):
         """How far to put the hardware centre from the slice.
 
-        A quarter of the sample rate: far enough that the DC spike is nowhere
-        near the demodulated channel, close enough that the slice stays inside
-        the 80% usable window even after the tuner rounds our request.
+        _DC_CLEARANCE_HZ, except at rates too narrow to afford it, where it
+        falls back to a quarter of the rate.
+
+        Two constraints, and they pull opposite ways:
+
+        - LOWER: the DC spike must clear the demodulated channel entirely. That
+          is a fixed number of hertz (FM_PASS_HZ at worst), so the clearance is
+          fixed too.
+        - UPPER: the slice has to stay inside the ~80% usable window, which IS a
+          fraction of the rate — set_slice retunes at 0.40 * samp_rate, so an
+          offset at or past that would bounce the tuner straight back out again.
+
+        A fixed clearance satisfies the first and can violate the second: at the
+        125 kS/s an SDRplay runs for fine bins, 100 kHz is 0.8 of the rate and
+        would park the slice outside the window. The quarter-rate cap keeps the
+        old, safe behaviour wherever the fixed clearance will not fit — below
+        400 kS/s — and costs nothing above it, where a quarter rate is far more
+        offset than the spike ever needed. (#37)
         """
-        return 0.25 * self.samp_rate
+        return min(_DC_CLEARANCE_HZ, 0.25 * self.samp_rate)
 
     def retune(self, center_hz):
         # Legacy/explicit hardware recentre (e.g. a band-change pan set).
@@ -1039,8 +1068,16 @@ class SoapyAdapter(RadioAdapter):
         # to 145.510 immediately undone by a retune to 145.070, and the
         # demodulator was on the DC spike again. Any route that moves the
         # hardware has to respect the offset.
+        #
+        # "Too close to DC" is measured against the clearance we would apply,
+        # not against a second, unrelated fraction of the sample rate. The old
+        # test was 0.05 * samp_rate = 102 kHz at 2.04 MS/s, which now sits just
+        # ABOVE the 100 kHz offset itself — so a correctly offset centre read as
+        # parked on DC. Comparing against _dc_offset_hz() makes the rule one
+        # rule and makes it idempotent: a centre already at the clearance is
+        # exactly at the bound, not inside it, and is left alone.
         center_hz = float(center_hz)
-        if abs(center_hz - self._slice_hz) < 0.05 * self.samp_rate:
+        if abs(center_hz - self._slice_hz) < self._dc_offset_hz():
             center_hz = self._slice_hz + self._dc_offset_hz()
         self._retune_to = center_hz
 
