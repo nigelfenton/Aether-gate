@@ -4,6 +4,40 @@ All notable changes to Aether-gate. Newest first.
 
 ## [Unreleased]
 
+### Fixed
+- **Offset tuning left a `0.25 * samp_rate` dead band at the edge of the
+  panadapter (#37).** The hardware centre is placed away from the slice so the
+  DC spike falls outside the demodulated channel, but the pan is still labelled
+  and painted as the full sample rate centred on the *slice*. The two windows
+  differ by exactly the offset, so a band of that width was painted without ever
+  having been sampled — a black rectangle with hard vertical edges, observed on
+  an RSP1a at 2.040 MS/s as 510 kHz of the 2.04 MHz pan. On an instrument that
+  reads as "no signals here" when the truth is "never looked at".
+
+  The offset is now a fixed clearance (`_DC_CLEARANCE_HZ`, 100 kHz) rather than
+  a fraction of the rate, capped at a quarter rate below ~400 kS/s where a fixed
+  number will not fit inside the usable window. The spike does not get wider
+  when the tuner opens up, so the clearance should not either: a quarter rate
+  was ~170x what clearing a 3 kHz SSB channel needs, and every hertz of it came
+  off the panadapter. At 2.040 MS/s the dead band drops from 510 kHz to 100 kHz;
+  at 10 MS/s, from 2.5 MHz to 100 kHz. Narrow rates are unchanged.
+
+  `retune()`'s "is this centre parked on DC?" test now measures against that
+  same clearance instead of a second, unrelated `0.05 * samp_rate` — which at
+  2.04 MS/s is 102 kHz and so sat just *above* the new 100 kHz offset, reading a
+  correctly-offset centre as too close. One bound instead of two that disagree,
+  and idempotent.
+
+  ⚠ **Mitigated, not eliminated.** A 100 kHz dead band remains at wide rates.
+  Closing it completely needs the pan to advertise only the span that was
+  actually sampled — direction 1 in #37, which has a feedback trap worth knowing
+  about: `set_span()` turns AE's requested span back into a *rate* request, so
+  reporting a reduced span without compensating there would walk the rate down
+  on every round trip.
+
+  Not yet verified on hardware — the bench is packed for a house move. The
+  arithmetic and both bounds are pinned by `tests/test_dc_clearance.py`.
+
 ## [0.5.1] — 2026-09-06
 
 A single fix, on top of 0.5.0: a gate whose radio is absent no longer
