@@ -75,6 +75,21 @@ jobs:
           # clone has no tags and the file would be called aether-gate-pi-<sha>.
           fetch-depth: 0
 
+      # The image's CODE comes from the tag; the IMAGE BUILDER comes from the
+      # commit this workflow runs at. A tag cut before a build-image.sh fix still
+      # carries the bug -- v0.5.1's stage heredoc executes a backquoted command on
+      # the build host and dies on this runner (#46) -- so back-filling an older
+      # release would fail for reasons that have nothing to do with the release.
+      # Only build-image.sh is swapped; the gate package and install-pi.sh stay
+      # exactly as tagged. For a release event the two are the same file.
+      - name: Use this workflow's image builder for a tag build
+        if: steps.ref.outputs.tag != ''
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ github.sha }}"
+          git show "${{ github.sha }}:deploy/build-image.sh" > deploy/build-image.sh
+          chmod +x deploy/build-image.sh
+          git diff --stat -- deploy/build-image.sh || true
+
       - name: Host tools build-image.sh checks for
         run: |
           sudo apt-get update -y
