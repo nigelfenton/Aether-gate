@@ -92,9 +92,13 @@ $rtl = Join-Path $Work "rtl-sdr-blog"
 Clone-Pinned $RTLSDR_REPO $RTLSDR_COMMIT $rtl
 $rtlBuild = Join-Path $rtl "build"
 New-Item -ItemType Directory -Force $rtlBuild | Out-Null
-cmake -S $rtl -B $rtlBuild -A x64 -DCMAKE_BUILD_TYPE=Release `
-      -DCMAKE_INSTALL_PREFIX=$Prefix -DLIBUSB_INCLUDE_DIRS=$luInc `
-      -DLIBUSB_LIBRARIES=$luLib -DDETACH_KERNEL_DRIVER=OFF
+# QUOTE every -D...=$var: PowerShell does NOT expand a variable inside an
+# unquoted native argument that starts with "-", so an unquoted
+# -DLIBUSB_INCLUDE_DIRS=$luInc reaches cmake as the literal text "$luInc"
+# (CMake then reports a path "prefixed in the source directory").
+cmake -S $rtl -B $rtlBuild -A x64 "-DCMAKE_BUILD_TYPE=Release" `
+      "-DCMAKE_INSTALL_PREFIX=$Prefix" "-DLIBUSB_INCLUDE_DIRS=$luInc" `
+      "-DLIBUSB_LIBRARIES=$luLib" "-DDETACH_KERNEL_DRIVER=OFF"
 if ($LASTEXITCODE -ne 0) { throw "cmake configure failed for rtl-sdr-blog" }
 cmake --build $rtlBuild --config Release --target rtlsdr_shared
 if ($LASTEXITCODE -ne 0) { throw "cmake build failed for rtl-sdr-blog (rtlsdr_shared)" }
@@ -105,8 +109,9 @@ $rtlLib = Get-ChildItem -Path $rtlBuild -Recurse -Filter "rtlsdr.lib" | Select-O
 if (-not $rtlDll -or -not $rtlLib) { throw "rtlsdr.dll/.lib not found after the build" }
 Copy-Item $rtlDll.FullName (Join-Path $Prefix "bin") -Force
 Copy-Item $rtlLib.FullName (Join-Path $Prefix "lib") -Force
-Copy-Item (Join-Path $rtl "includetl-sdr.h") (Join-Path $Prefix "include") -Force
-Copy-Item (Join-Path $rtl "includetl-sdr_export.h") (Join-Path $Prefix "include") -Force
+foreach ($h in "rtl-sdr.h", "rtl-sdr_export.h") {
+  Copy-Item (Join-Path (Join-Path $rtl "include") $h) (Join-Path $Prefix "include") -Force
+}
 
 # --- SoapySDR core + Python binding -----------------------------------------
 Say "SoapySDR $SOAPY_COMMIT (with the Python 3 binding)"
