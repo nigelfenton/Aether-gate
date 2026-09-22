@@ -132,7 +132,10 @@ jobs:
           # driver module) and is only proven together: the Setup page's own
           # health check must report SoapySDR as installed. No dongle on a
           # runner, so a device count of 0 is expected.
-          "$exe" --setup --no-browser > setup.log 2>&1 &
+          # The Setup page needs a PIN now (GHSA-7q6h-3p42-22hp), and a health
+          # check is not worth a login dance: AETHER_GATE_SETUP_OPEN is the
+          # documented opt-out, used here and nowhere else.
+          AETHER_GATE_SETUP_OPEN=1 "$exe" --setup --no-browser > setup.log 2>&1 &
           ui=$!
           known=""
           for i in $(seq 30); do

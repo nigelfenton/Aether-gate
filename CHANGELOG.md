@@ -4,6 +4,30 @@ All notable changes to Aether-gate. Newest first.
 
 ## [Unreleased]
 
+### Security
+- **The Setup UI (`:8730`) now needs a setup PIN, and never hands out a radio
+  password.** It listens on the LAN, and it could be read and driven by anyone
+  who reached it: `GET /api/profiles` returned saved Icom LAN logins verbatim,
+  `GET /api/status` echoed the gate's command line including `--pass`, and
+  Start/Stop/Save/Delete/Update needed nothing at all — nor did they check
+  `Origin`/`Host`, so another web page open on the same LAN could drive them.
+  - **Setup PIN**, chosen on the first visit (router-style), PBKDF2-hashed in
+    `~/.aether-gate/setup-auth.json` (0600), held as an `HttpOnly`,
+    `SameSite=Strict` session cookie; ~1 guess/s, 60 s lockout after 10 wrong.
+    Forgot it: delete that file and reload. `AETHER_GATE_SETUP_OPEN=1` drops the
+    PIN for an isolated bench LAN.
+  - **Secrets are write-only.** Profiles come back with `password` blanked and
+    `password_saved: true`; a blank password on Start/Save means "the saved one".
+  - **The password is no longer on the gate's command line** (where `ps` and
+    `/proc/<pid>/cmdline` show it to every local user); the launcher passes it as
+    `AETHER_GATE_PW`, which `apply_env_defaults()` already maps to `--pass`.
+  - **Host allow-list** (IP literals + this machine's own names, plus
+    `AETHER_GATE_SETUP_HOSTS`) defeats DNS rebinding; **POSTs must be JSON** and
+    same-origin, so a cross-site POST needs a CORS preflight that is never granted.
+  - `profiles.json` is written 0600 in a 0700 directory.
+  - New `test_setup_security` (8 cases, all of which fail against the previous
+    `setup.py`), in both CI jobs.
+
 ### Fixed
 - **Offset tuning left a `0.25 * samp_rate` dead band at the edge of the
   panadapter (#37).** The hardware centre is placed away from the slice so the

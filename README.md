@@ -150,7 +150,10 @@ python -m aether_gate --setup    # same, explicit
 python -m aether_gate --setup --no-browser   # headless: just prints the URL
 ```
 
-This opens the **Radio Setup & launcher** at **http://localhost:8730/** — pick your
+This opens the **Radio Setup & launcher** at **http://localhost:8730/**. The first
+visit asks you to **choose a setup PIN** — the page can start radios and keeps their
+logins, so it is not left open to everyone on the LAN (forgot it? delete
+`~/.aether-gate/setup-auth.json` and reload). Then pick your
 radio family (Icom / Kenwood / dongle / sim), fill in its connection fields, and hit
 **Start**. Save it as a profile with *"connect on launch"* and it comes up on its own
 next time.

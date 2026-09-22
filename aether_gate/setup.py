@@ -8,9 +8,13 @@ and Start/Stop that spawns `python -m aether_gate ...` (reusing all the CLI).
 
     python -m aether_gate.setup        # or bare `python -m aether_gate`
 """
+import hashlib
+import hmac
 import http.server
+import ipaddress
 import json
 import os
+import secrets
 import shutil
 import socket
 import struct
@@ -26,10 +30,63 @@ from .adapters.yaesu import radios as yaesu_radios
 
 SETUP_PORT = 8730
 PROFILES_PATH = os.path.join(os.path.expanduser("~"), ".aether-gate", "profiles.json")
+AUTH_PATH = os.path.join(os.path.expanduser("~"), ".aether-gate", "setup-auth.json")
+
+# --- who may use this page ------------------------------------------------
+# The Setup UI listens on the LAN (an appliance is configured from another
+# machine) and it holds radio logins, so it is gated three ways:
+#   * a setup PIN, created on first visit (router-style first run), checked
+#     with PBKDF2 and held as an HttpOnly/SameSite=Strict session cookie;
+#   * a Host check: only IP literals and this machine's own names are served,
+#     which is what defeats DNS rebinding (a rebinding page arrives with the
+#     attacker's hostname in Host);
+#   * POSTs must be JSON and, when a browser sends Origin, same-origin. JSON
+#     makes a cross-site POST a preflighted request, and we never answer
+#     preflights, so another web page cannot drive Start/Stop/Save.
+# AETHER_GATE_SETUP_OPEN=1 drops the PIN (a bench box on an isolated LAN);
+# the Host/Origin checks stay. AETHER_GATE_SETUP_HOSTS adds extra hostnames.
+# Forgot the PIN? Delete ~/.aether-gate/setup-auth.json and reload the page.
+SESSION_TTL_S = 12 * 3600
+PIN_MIN_LEN = 4
+_PBKDF2_ITERS = 200_000
+_sessions = {}                     # token -> expiry (process memory; restart = log in again)
+_fails = {"n": 0, "until": 0.0}    # crude brute-force brake on /api/auth/login
 
 _proc = None
 _lock = threading.Lock()
 _last_argv = []
+
+# Profile fields that are secrets: accepted, stored (0600), handed to the gate
+# through its environment -- and never returned by any GET or put on a command
+# line, where `ps` and /proc/<pid>/cmdline show them to every local user.
+SECRET_FIELDS = ("password",)
+
+
+def _truthy(v):
+    return str(v or "").strip().lower() not in ("", "0", "false", "no", "off")
+
+
+def _setup_open():
+    return _truthy(os.environ.get("AETHER_GATE_SETUP_OPEN"))
+
+
+def _private_write(path, text):
+    """Write a file only its owner can read (0600, in a 0700 directory)."""
+    d = os.path.dirname(path)
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    try:
+        os.chmod(d, 0o700)
+    except OSError:
+        pass
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    os.replace(tmp, path)
+    try:
+        os.chmod(path, 0o600)       # an existing looser file keeps its mode across replace on some OSes
+    except OSError:
+        pass
 
 
 def _local_ip():
@@ -82,9 +139,49 @@ def _load_profiles():
 
 
 def _save_profiles(state):
-    os.makedirs(os.path.dirname(PROFILES_PATH), exist_ok=True)
-    with open(PROFILES_PATH, "w") as f:
-        json.dump(state, f, indent=2)
+    _private_write(PROFILES_PATH, json.dumps(state, indent=2))
+
+
+def _public_profiles(state=None):
+    """Profiles as the browser may see them: secrets blanked, flagged as saved."""
+    st = _load_profiles() if state is None else state
+    out = {}
+    for name, cfg in st.get("profiles", {}).items():
+        c = dict(cfg)
+        for k in SECRET_FIELDS:
+            if c.get(k):
+                c[k] = ""
+                c[k + "_saved"] = True
+        out[name] = c
+    return {"profiles": out, "autostart": st.get("autostart")}
+
+
+def _clean_cfg(cfg):
+    """Drop the UI-only keys before a cfg is stored or started."""
+    c = dict(cfg or {})
+    c.pop("profile", None)
+    for k in SECRET_FIELDS:
+        c.pop(k + "_saved", None)
+    return c
+
+
+def _with_saved_secrets(cfg, profile):
+    """A blank secret means "keep the saved one": the page can no longer read
+    it back, so it sends nothing and the server fills it in."""
+    c = _clean_cfg(cfg)
+    saved = _load_profiles().get("profiles", {}).get(profile or "", {})
+    for k in SECRET_FIELDS:
+        if not str(c.get(k, "")).strip() and saved.get(k):
+            c[k] = saved[k]
+    return c
+
+
+def _redact_argv(argv):
+    out, hide = [], False
+    for a in argv:
+        out.append("***" if hide else a)
+        hide = a in ("--pass",)
+    return out
 
 
 # --- argv builder ---------------------------------------------------------
@@ -98,7 +195,9 @@ def _build_argv(cfg):
     if ad == "sim":
         add("--pattern", "pattern")
     elif ad == "icom9700":
-        add("--radio-ip", "radio_ip"); add("--user", "user"); add("--pass", "password")
+        # NOT --pass: the password goes to the gate as AETHER_GATE_PW (see
+        # _child_env). On a command line every local user can read it.
+        add("--radio-ip", "radio_ip"); add("--user", "user")
         add("--radio-local-ip", "radio_local_ip"); add("--civ-addr", "civ_addr")
         add("--icom-model", "icom_model")
     elif ad == "icom7300":
@@ -138,8 +237,23 @@ def _missing_fields(cfg):
     return miss
 
 
+def _child_env(cfg):
+    """The gate's environment: ours, plus the radio password as AETHER_GATE_PW.
+
+    A process's environment is readable only by its own user and root, unlike
+    its command line, and __main__.apply_env_defaults() already maps
+    AETHER_GATE_PW onto --pass (dest="pw")."""
+    env = dict(os.environ)
+    env.pop("AETHER_GATE_PW", None)            # never hand on the launcher's own
+    pw = str(cfg.get("password", "")).strip()
+    if pw:
+        env["AETHER_GATE_PW"] = pw
+    return env
+
+
 def _start(cfg):
     global _proc, _last_argv
+    cfg = _with_saved_secrets(cfg, (cfg or {}).get("profile"))
     with _lock:
         if _proc is not None and _proc.poll() is None:
             return 409, {"ok": False, "error": "already running - Stop first"}
@@ -148,8 +262,8 @@ def _start(cfg):
             return 400, {"ok": False, "error": "Fill in: " + ", ".join(miss)}
         argv = _build_argv(cfg)
         try:
-            _proc = subprocess.Popen(argv); _last_argv = argv
-            return 200, {"ok": True, "pid": _proc.pid, "argv": argv}
+            _proc = subprocess.Popen(argv, env=_child_env(cfg)); _last_argv = argv
+            return 200, {"ok": True, "pid": _proc.pid, "argv": _redact_argv(argv)}
         except Exception as e:
             return 500, {"ok": False, "error": str(e)}
 
@@ -157,7 +271,92 @@ def _start(cfg):
 def _status():
     with _lock:
         running = _proc is not None and _proc.poll() is None
-        return {"running": running, "pid": (_proc.pid if running else None), "argv": _last_argv}
+        return {"running": running, "pid": (_proc.pid if running else None),
+                "argv": _redact_argv(_last_argv)}
+
+
+# --- setup PIN + sessions -------------------------------------------------
+def _auth_record():
+    try:
+        with open(AUTH_PATH) as f:
+            d = json.load(f)
+        return d if d.get("hash") and d.get("salt") else None
+    except Exception:
+        return None
+
+
+def _pin_hash(pin, salt, iters=_PBKDF2_ITERS):
+    return hashlib.pbkdf2_hmac("sha256", pin.encode("utf-8"), bytes.fromhex(salt), iters).hex()
+
+
+def _set_pin(pin):
+    salt = secrets.token_hex(16)
+    _private_write(AUTH_PATH, json.dumps({"salt": salt, "iter": _PBKDF2_ITERS,
+                                          "hash": _pin_hash(pin, salt)}))
+
+
+def _pin_ok(pin):
+    rec = _auth_record()
+    if rec is None:
+        return False
+    got = _pin_hash(str(pin), rec["salt"], int(rec.get("iter", _PBKDF2_ITERS)))
+    return hmac.compare_digest(got, rec["hash"])
+
+
+def _new_session():
+    tok = secrets.token_urlsafe(32)
+    now = time.time()
+    for t, exp in list(_sessions.items()):
+        if exp < now:
+            _sessions.pop(t, None)
+    _sessions[tok] = now + SESSION_TTL_S
+    return tok
+
+
+_hosts_cache = None
+
+
+def _allowed_hosts():
+    """This machine's own names, worked out once.
+
+    NOT socket.getfqdn(): it does a reverse lookup that blocks for seconds on a
+    machine with no useful DNS (seen on macOS CI, where a request that should
+    have been refused instantly timed out at ten seconds). Per request it would
+    have made the page crawl. gethostname() is local and enough; anything else
+    goes in AETHER_GATE_SETUP_HOSTS.
+    """
+    global _hosts_cache
+    if _hosts_cache is None:
+        names = {"localhost", "aethergate.local"}
+        try:
+            h = (socket.gethostname() or "").lower()
+        except OSError:
+            h = ""
+        if h:
+            names.add(h)
+            names.add(h.split(".")[0] + ".local")
+        _hosts_cache = names
+    extra = os.environ.get("AETHER_GATE_SETUP_HOSTS", "")   # re-read: cheap, and editable live
+    return _hosts_cache | {h.strip().lower() for h in extra.split(",") if h.strip()}
+
+
+def _host_name(hostport):
+    """'10.0.0.5:8730' -> '10.0.0.5'; '[::1]:8730' -> '::1'; 'Pi.local' -> 'pi.local'."""
+    h = (hostport or "").strip().lower()
+    if h.startswith("["):
+        return h[1:h.find("]")] if "]" in h else h
+    return h.rsplit(":", 1)[0] if h.count(":") == 1 else h
+
+
+def _host_allowed(hostport):
+    name = _host_name(hostport)
+    if not name:
+        return False
+    try:
+        ipaddress.ip_address(name)
+        return True                 # an IP literal cannot be a rebinding hostname
+    except ValueError:
+        return name in _allowed_hosts()
 
 
 # --- one-click update ----------------------------------------------------
@@ -414,11 +613,108 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(b))); self.end_headers()
         self.wfile.write(b)
 
-    def _json(self, code, obj):
-        self._send(code, json.dumps(obj))
+    def _json(self, code, obj, cookie=None):
+        b = json.dumps(obj).encode()
+        self.send_response(code); self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        if cookie is not None:
+            self.send_header("Set-Cookie", cookie)
+        self.send_header("Content-Length", str(len(b))); self.end_headers()
+        self.wfile.write(b)
+
+    def end_headers(self):
+        self.send_header("X-Frame-Options", "DENY")          # no clickjacking the Start button
+        self.send_header("X-Content-Type-Options", "nosniff")
+        super().end_headers()
+
+    # --- gatekeeping -------------------------------------------------------
+    def _session_token(self):
+        for part in (self.headers.get("Cookie") or "").split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == "ag_session":
+                return v
+        return ""
+
+    def _authed(self):
+        if _setup_open():
+            return True
+        exp = _sessions.get(self._session_token())
+        return bool(exp and exp > time.time())
+
+    def _host_ok(self):
+        if _host_allowed(self.headers.get("Host")):
+            return True
+        self._json(403, {"ok": False, "error": "unrecognised Host - open this page by the "
+                         "gate's IP address or its own name (see AETHER_GATE_SETUP_HOSTS)"})
+        return False
+
+    def _post_ok(self):
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            self._json(415, {"ok": False, "error": "POST bodies must be application/json"})
+            return False
+        origin = self.headers.get("Origin")
+        if origin and origin != "null":
+            ohost = origin.split("://", 1)[-1].rstrip("/")
+            if ohost.lower() != (self.headers.get("Host") or "").lower():
+                self._json(403, {"ok": False, "error": "cross-origin request refused"})
+                return False
+        return True
+
+    def _auth_state(self):
+        self._json(200, {"pin_set": _auth_record() is not None, "authed": self._authed(),
+                         "open": _setup_open()})
+
+    def _auth_post(self, p, body):
+        def cookie(tok):
+            return (f"ag_session={tok}; HttpOnly; SameSite=Strict; Path=/; "
+                    f"Max-Age={SESSION_TTL_S}")
+        if p.startswith("/api/auth/logout"):
+            _sessions.pop(self._session_token(), None)
+            self._json(200, {"ok": True},
+                       cookie="ag_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")
+            return
+        pin = str(body.get("pin", ""))
+        if p.startswith("/api/auth/setup"):
+            if _auth_record() is not None:
+                self._json(409, {"ok": False, "error": "a setup PIN is already set - log in"})
+                return
+            if len(pin) < PIN_MIN_LEN:
+                self._json(400, {"ok": False,
+                                 "error": f"PIN needs at least {PIN_MIN_LEN} characters"})
+                return
+            _set_pin(pin)
+            self._json(200, {"ok": True}, cookie=cookie(_new_session()))
+            return
+        if p.startswith("/api/auth/login"):
+            if time.time() < _fails["until"]:
+                self._json(429, {"ok": False, "error": "too many wrong PINs - wait a minute"})
+                return
+            if _pin_ok(pin):
+                _fails["n"] = 0
+                self._json(200, {"ok": True}, cookie=cookie(_new_session()))
+                return
+            _fails["n"] += 1
+            if _fails["n"] >= 10:
+                _fails["n"], _fails["until"] = 0, time.time() + 60
+            time.sleep(1.0)                                   # slows guessing to ~1/s
+            self._json(401, {"ok": False, "error": "wrong PIN"})
+            return
+        self._json(404, {})
 
     def do_GET(self):
+        if not self._host_ok():
+            return
         p = self.path
+        if p.startswith("/api/auth/state"):
+            self._auth_state()
+            return
+        if not self._authed():
+            if p.startswith("/api/"):
+                self._json(401, {"ok": False, "error": "log in first"})
+            else:
+                self._send(200, AUTH_PAGE, "text/html; charset=utf-8")
+            return
         if p == "/" or p.startswith("/index"):
             self._send(200, PAGE, "text/html; charset=utf-8")
         elif p.startswith("/api/adapters"):
@@ -427,7 +723,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json(200, {"icom": _icom_json(), "kenwood": _kenwood_json(),
                              "yaesu": _yaesu_json()})
         elif p.startswith("/api/profiles"):
-            self._json(200, _load_profiles())
+            self._json(200, _public_profiles())
         elif p.startswith("/api/status"):
             self._json(200, _status())
         elif p.startswith("/api/known"):
@@ -440,12 +736,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json(404, {})
 
     def do_POST(self):
-        n = int(self.headers.get("Content-Length", 0))
+        n = int(self.headers.get("Content-Length", 0) or 0)
+        raw = self.rfile.read(n) if n else b""
+        if not (self._host_ok() and self._post_ok()):
+            return
         try:
-            body = json.loads(self.rfile.read(n).decode()) if n else {}
+            body = json.loads(raw.decode()) if raw else {}
         except Exception:
             body = {}
+        if not isinstance(body, dict):
+            body = {}
         p = self.path
+        if p.startswith("/api/auth/"):
+            self._auth_post(p, body)
+            return
+        if not self._authed():
+            self._json(401, {"ok": False, "error": "log in first"})
+            return
         if p.startswith("/api/update/install"):
             code, resp = _update_install(body); self._json(code, resp)
         elif p.startswith("/api/start"):
@@ -465,7 +772,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not name:
                 self._json(400, {"ok": False, "error": "Profile needs a name"}); return
             st = _load_profiles()
-            st["profiles"][name] = body.get("cfg", {})
+            cfg = _clean_cfg(body.get("cfg", {}))
+            old = st["profiles"].get(name, {})
+            for k in SECRET_FIELDS:            # blank = keep the saved secret
+                if not str(cfg.get(k, "")).strip() and old.get(k):
+                    cfg[k] = old[k]
+            st["profiles"][name] = cfg
             if body.get("autostart"):
                 st["autostart"] = name
             elif st.get("autostart") == name:
@@ -501,7 +813,7 @@ PAGE = r"""<!DOCTYPE html><html><head><meta charset=utf-8>
  .adv summary{color:#58a6ff;cursor:pointer;margin-top:8px;font-size:13px}
  a{color:#58a6ff}
 </style></head><body>
-<h1>Aether-gate</h1><div class=sub>Radio setup &amp; launcher &mdash; present any radio to AetherSDR as a Flex &middot; <a href="/known" target=_blank>Known info / status &#8599;</a></div>
+<h1>Aether-gate</h1><div class=sub>Radio setup &amp; launcher &mdash; present any radio to AetherSDR as a Flex &middot; <a href="/known" target=_blank>Known info / status &#8599;</a> &middot; <a href="#" onclick="logout();return false">Log out</a></div>
 <div class=card id=updcard style="display:none">
  <div id=updmsg class=hint></div>
  <div id=updactions style="margin-top:10px;display:none">
@@ -683,6 +995,11 @@ PAGE = r"""<!DOCTYPE html><html><head><meta charset=utf-8>
 
 <script>
 let RADIOS={icom:{},kenwood:{},yaesu:{}};
+// Every POST is JSON: the server refuses anything else (so another web page
+// cannot drive this one), and a 401 means the session ended -> show the login.
+async function post(u,o){const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o||{})});
+ if(r.status===401){location.reload();} return r;}
+async function logout(){await post('/api/auth/logout',{});location.reload();}
 const FIELDS=['adapter','pattern','radio_ip','civ_addr','user','password','radio_local_ip',
  'usb_civ_port','usb_civ_baud','civ_addr_7300','usb_audio_device',
  'kw_model','rig_serial_port','rig_baud','rigctld_host','rigctld_port','soapy_driver','gain','direct_samp',
@@ -740,6 +1057,7 @@ function badge(v){return v?' <span class=ok>&#10004; verified</span>':' <span cl
 function cfg(){
  const c={}; FIELDS.forEach(i=>{const el=document.getElementById(i);if(el)c[i]=el.value;});
  c.adapter=document.getElementById('adapter').value;
+ c.profile=document.getElementById('profname').value.trim();   // lets a blank password mean "the saved one"
  // dongle box uses s_driver/s_gain -> map to soapy_* for the argv
  if(fam()==='soapy'){c.soapy_driver=c.s_driver;c.gain=c.s_gain;}
  if(fam()==='icom7300'){c.civ_addr=c.civ_addr_7300||'0x94';}
@@ -751,6 +1069,9 @@ function cfg(){
  return c;
 }
 function setCfg(c){FIELDS.forEach(i=>{const el=document.getElementById(i);if(el&&c[i]!==undefined)el.value=c[i];});
+ // The server never sends a saved password back; say it is there instead.
+ const pw=document.getElementById('password');
+ if(pw)pw.placeholder=c.password_saved?'saved - leave blank to keep it':'';
  if(c.adapter){document.getElementById('adapter').value=c.adapter;}
  // yaesu profiles store canonical keys; mirror them back into the …2 DOM fields.
  if(c.adapter==='yaesu'){const set=(id,v)=>{const e=document.getElementById(id);if(e&&v!==undefined)e.value=v;};
@@ -760,9 +1081,9 @@ function setCfg(c){FIELDS.forEach(i=>{const el=document.getElementById(i);if(el&
  if(c.adapter==='icom7300'&&c.civ_addr){const e=document.getElementById('civ_addr_7300');if(e)e.value=c.civ_addr;}
  onAdapter();}
 async function start(){msg('...');
- const r=await (await fetch('/api/start',{method:'POST',body:JSON.stringify(cfg())})).json();
+ const r=await (await post('/api/start',cfg())).json();
  msg(r.ok?'started':('⚠ '+(r.error||'failed')),r.ok);poll();}
-async function stop(){await fetch('/api/stop',{method:'POST',body:'{}'});msg('stopped');poll();}
+async function stop(){await post('/api/stop',{});msg('stopped');poll();}
 function msg(t,ok){const m=document.getElementById('msg');m.textContent=t;m.style.color=ok?'#3fb950':'#d29922';}
 // --- profiles ---
 let PROFILES={};
@@ -775,12 +1096,12 @@ function loadProfile(){const n=document.getElementById('profsel').value;if(!n||!
  setTimeout(()=>{onRadio('icom');onRadio('kenwood');onRadio('yaesu');},0);msg('loaded "'+n+'"',true);}
 async function saveProfile(){const name=document.getElementById('profname').value.trim();
  if(!name){msg('⚠ give the profile a name');return;}
- const r=await (await fetch('/api/profiles/save',{method:'POST',body:JSON.stringify(
-   {name,cfg:cfg(),autostart:document.getElementById('autostart').checked})})).json();
+ const r=await (await post('/api/profiles/save',
+   {name,cfg:cfg(),autostart:document.getElementById('autostart').checked})).json();
  if(r.ok){msg('saved "'+name+'"',true);await loadProfiles();document.getElementById('profsel').value=name;}else msg('⚠ '+r.error);}
 async function delProfile(){const n=document.getElementById('profsel').value;if(!n)return;
- await fetch('/api/profiles/delete',{method:'POST',body:JSON.stringify({name:n})});await loadProfiles();msg('deleted "'+n+'"');}
-async function poll(){const s=await (await fetch('/api/status')).json();
+ await post('/api/profiles/delete',{name:n});await loadProfiles();msg('deleted "'+n+'"');}
+async function poll(){const rs=await fetch('/api/status');if(rs.status===401){location.reload();return;}const s=await rs.json();
  document.getElementById('dot').style.background=s.running?'#3fb950':'#6e7681';
  document.getElementById('st').textContent=s.running?('RUNNING (pid '+s.pid+')'):'stopped';
  document.getElementById('argv').textContent=(s.argv&&s.argv.length)?s.argv.slice(3).join(' '):'';
@@ -811,8 +1132,7 @@ async function doUpdate(){
  const btn=document.getElementById('updgo'), note=document.getElementById('updnote');
  btn.disabled=true; note.textContent='Updating — do not power off…';
  let r; try{
-  r=await (await fetch('/api/update/install',{method:'POST',
-        body:JSON.stringify({tag:UPD_TAG})})).json();
+  r=await (await post('/api/update/install',{tag:UPD_TAG})).json();
  }catch(e){ note.textContent='Update failed: '+e; btn.disabled=false; return; }
  document.getElementById('updmsg').innerHTML='<b>'+(r.message||'')+'</b>';
  if(r.ok){
@@ -825,6 +1145,47 @@ async function doUpdate(){
 }
 document.getElementById('updgo').onclick=doUpdate;
 setTimeout(checkUpdate,1500);
+init();
+</script></body></html>"""
+
+
+AUTH_PAGE = r"""<!DOCTYPE html><html><head><meta charset=utf-8>
+<title>Aether-gate - setup PIN</title><meta name=viewport content="width=device-width,initial-scale=1">
+<style>
+ body{font-family:system-ui,sans-serif;background:#0d1117;color:#e6edf3;max-width:420px;margin:0 auto;padding:28px 20px}
+ h1{color:#58a6ff;margin:0 0 4px} .sub{color:#8b949e;margin:0 0 16px;font-size:14px;line-height:1.5}
+ label{display:block;margin:12px 0 4px;font-size:13px;color:#adbac7}
+ input{width:100%;box-sizing:border-box;background:#161b22;color:#e6edf3;border:1px solid #30363d;border-radius:6px;padding:9px;font-size:16px}
+ button{margin-top:14px;font-size:15px;font-weight:600;border:none;border-radius:6px;padding:10px 18px;cursor:pointer;color:#fff;background:#238636}
+ #msg{margin-top:10px;color:#d29922;font-size:14px} code{background:#161b22;padding:1px 4px;border-radius:4px}
+</style></head><body>
+<h1>Aether-gate</h1>
+<div class=sub id=intro>Checking&hellip;</div>
+<form id=f onsubmit="go();return false" style="display:none">
+ <label for=pin>Setup PIN</label><input id=pin type=password autocomplete=current-password autofocus>
+ <div id=confirmbox style="display:none"><label for=pin2>Type it again</label><input id=pin2 type=password autocomplete=new-password></div>
+ <button id=btn>Continue</button><div id=msg></div>
+</form>
+<script>
+let FIRST=false;
+async function init(){
+ const s=await (await fetch('/api/auth/state')).json();
+ if(s.authed){location.reload();return;}
+ FIRST=!s.pin_set;
+ document.getElementById('intro').innerHTML=FIRST
+  ?'<b>First run: choose a setup PIN.</b> This page starts radios and keeps their logins, so it asks for a PIN from now on (at least 4 characters). Forgot it later? Delete <code>~/.aether-gate/setup-auth.json</code> on the gate and reload.'
+  :'Enter the setup PIN for this gate.';
+ document.getElementById('confirmbox').style.display=FIRST?'':'none';
+ document.getElementById('btn').textContent=FIRST?'Set PIN':'Log in';
+ document.getElementById('f').style.display='';
+}
+async function go(){
+ const pin=document.getElementById('pin').value, m=document.getElementById('msg');
+ if(FIRST&&pin!==document.getElementById('pin2').value){m.textContent='The two PINs differ.';return;}
+ const r=await fetch(FIRST?'/api/auth/setup':'/api/auth/login',{method:'POST',
+   headers:{'Content-Type':'application/json'},body:JSON.stringify({pin})});
+ const j=await r.json(); if(j.ok){location.reload();} else {m.textContent=j.error||'Refused';}
+}
 init();
 </script></body></html>"""
 
@@ -883,6 +1244,10 @@ def main(argv=None):
     srv = http.server.ThreadingHTTPServer(("0.0.0.0", SETUP_PORT), Handler)
     url = f"http://127.0.0.1:{SETUP_PORT}/"
     print(f"Aether-gate setup UI -> http://{ip}:{SETUP_PORT}/  (and {url})")
+    if _setup_open():
+        print("  AETHER_GATE_SETUP_OPEN is set: no setup PIN. Anyone on this LAN can use the page.")
+    elif _auth_record() is None:
+        print("  No setup PIN yet: the first person to open the page chooses one.")
     if "--no-browser" not in (argv or sys.argv[1:]):
         try:
             import webbrowser
