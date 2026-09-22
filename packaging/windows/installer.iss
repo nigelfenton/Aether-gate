@@ -40,13 +40,23 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-; per-machine: the firewall rule needs admin anyway
-PrivilegesRequired=admin
+; INSTALL FOR THIS USER, WITHOUT ADMIN, BY DEFAULT.
+; A ham installing a radio program on their own PC should not meet a UAC
+; prompt: asking for admin is exactly where a cautious operator stops, and
+; it is what happened on the first real install (2026-09-22). Per-user puts
+; the program under %LOCALAPPDATA%\Programs and needs no elevation at all.
+; "All users" is still there -- the wizard offers both on its first page --
+; and only that mode gets the firewall task, which does need admin.
+PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog
 UninstallDisplayIcon={app}\AetherGate.exe
 CloseApplications=yes
 
 [Tasks]
-Name: "firewall"; Description: "Allow Aether-gate through Windows Firewall on private (home) networks — recommended, so AetherSDR can find your radio"
+; Firewall rules need admin, so this is offered only for an all-users install.
+; In the default per-user install Windows asks once, on the first start, with
+; its own Allow button.
+Name: "firewall"; Check: IsAdminInstallMode; Description: "Allow Aether-gate through Windows Firewall on private (home) networks — recommended, so AetherSDR can find your radio"
 Name: "startup"; Description: "Start Aether-gate when Windows starts (brings up a saved ""connect on launch"" radio)"; Flags: unchecked
 Name: "desktopicon"; Description: "Desktop icon"; Flags: unchecked
 
@@ -67,4 +77,4 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""A
 Filename: "{app}\AetherGate.exe"; Description: "Open Aether-gate Setup now"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Aether-gate"""; Flags: runhidden; RunOnceId: "DelFirewallRule"
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Aether-gate"""; Flags: runhidden; RunOnceId: "DelFirewallRule"; Check: IsAdminInstallMode

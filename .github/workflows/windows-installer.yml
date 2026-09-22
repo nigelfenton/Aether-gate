@@ -15,8 +15,10 @@
 #   workflow_dispatch with a tag: build and attach for an existing release.
 #
 # UNSIGNED: Windows SmartScreen shows "Windows protected your PC" on first run
-# (More info -> Run anyway) until the installer is code-signed. The release
-# notes and README say so.
+# (More info -> Run anyway) until the installer is code-signed, and a
+# reputation-based antivirus may refuse it outright -- Norton blocked the first
+# real install (2026-09-22). Hence the portable zip alongside the installer, and
+# the published checksums. The README says both.
 name: windows-installer
 
 on:
@@ -84,6 +86,26 @@ jobs:
       - name: Build dependencies
         run: python -m pip install numpy pyinstaller
 
+      # --- the SDR stack (SoapySDR + rtl-sdr-blog V4 + libusb) ----------------
+      # Built from the same pinned commits as deploy/install-pi.sh, so a dongle
+      # behaves as it does on the Pi. Cached: it is the slow part, and the key is
+      # the build script itself, which carries the pins.
+      - name: Cache the SDR stack
+        id: sdrcache
+        uses: actions/cache@v4
+        with:
+          path: build/sdr-prefix
+          key: sdr-${{ runner.os }}-py312-${{ hashFiles('packaging/windows/build_sdr.ps1') }}
+
+      - name: SWIG (for the SoapySDR Python binding)
+        if: steps.sdrcache.outputs.cache-hit != 'true'
+        run: choco install swig -y --no-progress
+
+      - name: Build the SDR stack
+        if: steps.sdrcache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: pwsh packaging/windows/build_sdr.ps1 -PythonExe (Get-Command python).Source
+
       - name: Build the program folder
         run: python packaging/windows/build.py
 
@@ -105,6 +127,38 @@ jobs:
           cat gate.log | tail -5
           [ "$ok" = 1 ] || { echo "the frozen gate never answered on its control port"; exit 1; }
           echo "frozen gate OK"
+
+          # The dongle stack travels in three parts (DLLs, Python binding,
+          # driver module) and is only proven together: the Setup page's own
+          # health check must report SoapySDR as installed. No dongle on a
+          # runner, so a device count of 0 is expected.
+          "$exe" --setup --no-browser > setup.log 2>&1 &
+          ui=$!
+          known=""
+          for i in $(seq 30); do
+            known=$(curl -fsS -m 2 http://127.0.0.1:8730/api/known || true)
+            [ -n "$known" ] && break
+            sleep 1
+          done
+          kill $ui 2>/dev/null || true
+          echo "$known" | grep -oE '"label": "(SoapySDR|dongles|numpy)", "value": "[^"]*"' || true
+          case "$known" in
+            *'"label": "SoapySDR", "value": "installed"'*)
+              echo "SoapySDR in the packaged program OK" ;;
+            *)
+              echo "the packaged program cannot import SoapySDR - the dongle stack did not travel"
+              exit 1 ;;
+          esac
+
+          # "0 dongles" is right on a runner with no hardware -- and identical to
+          # what a MISSING driver module produces, which is the failure this
+          # packaging is most likely to have. So check the module is in the build
+          # rather than inferring it from a device count.
+          ls -l dist/AetherGate/_internal/soapy-modules/ || {
+            echo "no soapy-modules directory: the RTL driver module did not travel"; exit 1; }
+          ls dist/AetherGate/_internal/soapy-modules/ | grep -qi rtl || {
+            echo "the RTL driver module is missing from soapy-modules"; exit 1; }
+          echo "RTL driver module present OK"
 
       - name: Version for the installer
         id: ver
@@ -132,12 +186,29 @@ jobs:
             "{0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB)
           }
 
+      # A second route for a PC whose antivirus refuses an unsigned installer
+      # (Norton blocked the first real install, 2026-09-22): unzip anywhere and
+      # run AetherGate.exe. No installer, no admin, nothing written outside the
+      # folder and %USERPROFILE%\.aether-gate.
+      - name: Portable zip
+        shell: pwsh
+        run: |
+          $zip = "dist\Aether-gate-$env:AG_VERSION-windows-portable.zip"
+          Compress-Archive -Path dist\AetherGate\* -DestinationPath $zip -CompressionLevel Optimal
+          $line = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower() + "  " + (Split-Path $zip -Leaf) + "`n"
+          [IO.File]::WriteAllText("$zip.sha256", $line)
+          "{0}  {1:N1} MB" -f (Split-Path $zip -Leaf), ((Get-Item $zip).Length / 1MB)
+        env:
+          AG_VERSION: ${{ steps.ver.outputs.version }}
+
       - uses: actions/upload-artifact@v4
         with:
           name: aether-gate-windows-installer
           path: |
             dist/Aether-gate-Setup-*.exe
             dist/Aether-gate-Setup-*.exe.sha256
+            dist/Aether-gate-*-windows-portable.zip
+            dist/Aether-gate-*-windows-portable.zip.sha256
           retention-days: 5
 
   attach:

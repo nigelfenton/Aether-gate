@@ -28,11 +28,46 @@ The installer lands in `dist\`.
   back after a reboot.
 - Saved radios and the setup PIN live in `%USERPROFILE%\.aether-gate`. Upgrades and uninstalls leave them alone.
 
-## Phase 1 limits
+## Antivirus and signing
 
-- **Radios:** Icom LAN (IC-9700, IC-705 and the rest of the Icom LAN family) and the sim. **Not yet:** hamlib CAT
-  radios (Kenwood/Yaesu need `rigctld.exe`) and SDR dongles (SoapySDR). The Setup page's *Known info* page says
-  what is missing.
+The installer is **not code-signed**, so it has no reputation: SmartScreen warns, and a
+reputation-based antivirus may refuse it outright. **Norton blocked it on the first real install
+(2026-09-22)** before it could run.
+
+Until it is signed:
+
+- the **portable zip** (`Aether-gate-<ver>-windows-portable.zip`, built alongside the installer) is
+  the fallback — unzip and run, no installer and no admin;
+- every artifact ships a `.sha256`;
+- false positives are worth reporting to the vendor (Norton/Symantec and Microsoft both take
+  submissions), which is how an unsigned installer eventually gets whitelisted.
+
+Signing is the real fix, in rough order of fit: **SignPath Foundation** (free for open-source
+projects), **Azure Trusted Signing** (~$10/month, needs a verified business identity), or a
+traditional OV certificate (~$200–400/year).
+
+## RTL-SDR dongles (phase 2)
+
+`build_sdr.ps1` builds **SoapySDR** (with its Python binding), the **rtl-sdr-blog V4 driver** and **libusb** from
+the same pinned commits as the Pi installer, and `build.py` bundles them. The workflow caches that build and then
+proves it travelled: the packaged program's own *Known info* page must report **SoapySDR: installed**.
+
+One thing bundling cannot do for you: **Windows needs the WinUSB driver bound to the dongle**. Out of the box a
+dongle claims to be a TV tuner and SoapySDR will not open it.
+
+1. Download **[Zadig](https://zadig.akeo.ie/)**.
+2. Plug the dongle in, run Zadig, *Options → List All Devices*.
+3. Pick **Bulk-In, Interface (Interface 0)** — usually "RTL2838UHIDIR".
+4. Choose **WinUSB** and press *Replace Driver*.
+5. Unplug and replug, then press **Start** in the Setup page.
+
+⚠ Pick the right device. Zadig replaces the driver of whatever is selected.
+
+## Limits
+
+- **Radios:** Icom LAN (IC-9700, IC-705 and the rest of the family), RTL-SDR dongles, and the sim. **Not yet:**
+  hamlib CAT radios — Kenwood/Yaesu need `rigctld.exe`, which is not bundled. The Setup page's *Known info* page
+  says what is missing.
 - **Unsigned:** Windows SmartScreen shows *"Windows protected your PC"* the first time. Click **More info → Run
   anyway**. That goes away once the installer is code-signed.
 - **Updates:** the page tells you when a new release is out. Update by running the new installer; the in-page
