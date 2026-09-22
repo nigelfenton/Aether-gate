@@ -122,7 +122,12 @@ Say "SoapySDR $SOAPY_COMMIT (with the Python 3 binding)"
 $soapy = Join-Path $Work "SoapySDR"
 Clone-Pinned $SOAPY_REPO $SOAPY_COMMIT $soapy
 $pyExe = (Get-Command $PythonExe).Source
+# Python 3 binding only. SoapySDR also ships C#, Lua and Python 2 bindings, and
+# on this runner the C# one fails to compile (its assembly targets a .NET that
+# is not installed: CS0234 on System.Buffers). The gate imports SoapySDR from
+# Python and nothing else, so the rest are off.
 Build-CMake $soapy @("-DENABLE_PYTHON3=ON", "-DENABLE_PYTHON=OFF",
+                     "-DENABLE_CSHARP=OFF", "-DENABLE_LUA=OFF",
                      "-DPYTHON3_EXECUTABLE=$pyExe", "-DPython3_EXECUTABLE=$pyExe",
                      "-DENABLE_TESTS=OFF", "-DENABLE_DOCS=OFF")
 
