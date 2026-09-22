@@ -27,8 +27,41 @@ def _strip_python_options(argv):
     return out
 
 
+_INSTALLER_MSG = ("This is the installed Windows program: to update, download the new "
+                  "installer (Aether-gate-Setup .exe) from the release page and run it. "
+                  "Your saved radios and setup PIN are kept.")
+
+
+def _guard_updater():
+    """Never let the in-page updater swap files inside the installed program.
+
+    Newer gate code refuses by itself (updater.frozen_program). A release built
+    BEFORE that guard -- e.g. the v0.5.1 back-fill, whose package is taken from
+    the tag unchanged -- would otherwise download a source tree and swap it in
+    under PyInstaller's _internal/, half-updating the program. The packaging
+    closes that here, whatever gate version is inside.
+    """
+    from aether_gate import updater
+    if hasattr(updater, "frozen_program"):
+        return
+    real_status = updater.status
+
+    def status(current_version, *a, **kw):
+        st = real_status(current_version, *a, **kw)
+        if st.get("available"):
+            st["message"] = st.get("message", "") + " -- " + _INSTALLER_MSG
+        return st
+
+    def install(*a, **kw):
+        return {"ok": False, "message": _INSTALLER_MSG}
+
+    updater.status, updater.install = status, install
+
+
 def main():
     sys.argv = [sys.argv[0]] + _strip_python_options(sys.argv[1:])
+    if getattr(sys, "frozen", False):
+        _guard_updater()
     from aether_gate.__main__ import main as gate_main
     return gate_main()
 

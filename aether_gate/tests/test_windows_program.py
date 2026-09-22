@@ -61,8 +61,23 @@ def test_frozen_program_refuses_the_file_swap():
     print("ok  updater: the installed program is told to run the new installer, nothing swapped")
 
 
+def test_launcher_guards_an_older_updater():
+    """A gate built before updater.frozen_program existed (the v0.5.1 back-fill)
+    must still refuse the file swap inside the installed program."""
+    saved = (updater.install, updater.status, getattr(updater, "frozen_program", None))
+    del updater.frozen_program                      # look like the old updater
+    try:
+        _launcher()._guard_updater()
+        r = updater.install(None, "anywhere")
+        assert r["ok"] is False and "installer" in r["message"].lower(), r
+    finally:
+        updater.install, updater.status, updater.frozen_program = saved
+    print("ok  launcher: an updater without the guard is guarded by the packaging")
+
+
 def main():
-    tests = [test_shim_drops_the_python_options, test_frozen_program_refuses_the_file_swap]
+    tests = [test_shim_drops_the_python_options, test_frozen_program_refuses_the_file_swap,
+             test_launcher_guards_an_older_updater]
     for t in tests:
         try:
             t()
