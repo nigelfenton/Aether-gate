@@ -135,8 +135,12 @@ Build-CMake $soapy @("-DENABLE_PYTHON3=ON", "-DENABLE_PYTHON=OFF",
 Say "SoapyRTLSDR $SOAPYRTL_COMMIT"
 $srtl = Join-Path $Work "SoapyRTLSDR"
 Clone-Pinned $SOAPYRTL_REPO $SOAPYRTL_COMMIT $srtl
+# /permissive- : SoapyRTLSDR writes the C++ alternative operators "and"/"or",
+# which MSVC rejects in its default (non-conforming) mode -- C2065 "and":
+# undeclared identifier. Nothing is wrong with the RTL code.
 Build-CMake $srtl @("-DRTLSDR_INCLUDE_DIR=$Prefix\include",
-                    "-DRTLSDR_LIBRARY=$Prefix\lib\rtlsdr.lib")
+                    "-DRTLSDR_LIBRARY=$Prefix\lib\rtlsdr.lib",
+                    "-DCMAKE_CXX_FLAGS=/permissive-")
 
 # --- collect the Python binding where build.py expects it --------------------
 Say "collecting"
