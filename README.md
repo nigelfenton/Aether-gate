@@ -340,6 +340,12 @@ Aether-gate stands on other people's work:
 - CAT control is [Hamlib](https://hamlib.github.io/); dongle spectrum is
   [SoapySDR](https://github.com/pothosware/SoapySDR).
 
+## Privacy
+
+Aether-gate collects nothing and sends nothing about you: no telemetry, no analytics, no account. It talks to your
+radio and to AetherSDR, plus one optional GitHub check for a newer release (`AETHER_GATE_NO_UPDATE_CHECK=1` turns
+that off). Saved radios and the Setup PIN stay on your own machine. See [PRIVACY.md](PRIVACY.md).
+
 ## License
 
 GPL-3.0-or-later. Because the Icom transport is derived from the GPL-3.0
