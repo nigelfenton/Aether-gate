@@ -100,8 +100,12 @@ cmake -S $rtl -B $rtlBuild -A x64 "-DCMAKE_BUILD_TYPE=Release" `
       "-DCMAKE_INSTALL_PREFIX=$Prefix" "-DLIBUSB_INCLUDE_DIRS=$luInc" `
       "-DLIBUSB_LIBRARIES=$luLib" "-DDETACH_KERNEL_DRIVER=OFF"
 if ($LASTEXITCODE -ne 0) { throw "cmake configure failed for rtl-sdr-blog" }
-cmake --build $rtlBuild --config Release --target rtlsdr_shared
-if ($LASTEXITCODE -ne 0) { throw "cmake build failed for rtl-sdr-blog (rtlsdr_shared)" }
+# The shared-library target in this fork is "rtlsdr" (with "rtlsdr_static"
+# beside it); "rtlsdr_shared" is the osmocom name and MSBuild answers a wrong
+# target with "MSB1009: Project file does not exist", which reads like a broken
+# checkout rather than a typo.
+cmake --build $rtlBuild --config Release --target rtlsdr
+if ($LASTEXITCODE -ne 0) { throw "cmake build failed for rtl-sdr-blog (rtlsdr)" }
 
 New-Item -ItemType Directory -Force (Join-Path $Prefix "lib"), (Join-Path $Prefix "include") | Out-Null
 $rtlDll = Get-ChildItem -Path $rtlBuild -Recurse -Filter "rtlsdr.dll" | Select-Object -First 1
