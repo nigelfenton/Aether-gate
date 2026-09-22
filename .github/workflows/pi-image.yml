@@ -64,7 +64,9 @@ jobs:
             *)                 tag="" ;;
           esac
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "Building: ${tag:-this PR's head}"
+          # NB no apostrophe in the fallback: bash still treats ' as a quote inside
+          # ${var:-word}, even within double quotes, and the step dies on EOF.
+          echo "Building: ${tag:-the PR head}"
 
       - uses: actions/checkout@v4
         with:
