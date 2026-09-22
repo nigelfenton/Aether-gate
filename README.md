@@ -103,8 +103,24 @@ Then:
   will not see the radio. (The all-users install can add that rule for you instead.)
 - **AetherSDR on the same PC?** Set *Network / advanced → Port* to **5992**.
 - The Windows build covers **Icom LAN radios** (IC-9700, IC-705…), **RTL-SDR dongles** and the test sim.
-  Kenwood/Yaesu CAT is still to come. A dongle also needs the **WinUSB driver** bound to it once, with
-  [Zadig](https://zadig.akeo.ie/) — see [packaging/windows](packaging/windows/README.md).
+  Kenwood/Yaesu CAT is still to come.
+
+> ## ⚠️ RTL-SDR dongle on Windows? Run Zadig first
+>
+> Windows hands a fresh dongle to its **TV-tuner** driver, and **no SDR program can open it** until
+> that is changed. This is not an Aether-gate setting — every Windows SDR needs it, once per dongle.
+>
+> 1. Download **[Zadig](https://zadig.akeo.ie/)** and run it (no install needed).
+> 2. **Options → List All Devices.**
+> 3. In the drop-down pick **"Bulk-In, Interface (Interface 0)"** — usually shown as **RTL2838UHIDIR**.
+> 4. Set the driver box on the right to **WinUSB**, then press **Replace Driver**.
+> 5. **Unplug the dongle and plug it back in.**
+>
+> **⚠️ Pick the right line in that drop-down.** Zadig replaces the driver of whatever is selected, so
+> choosing your mouse or keyboard there will stop it working until you put the driver back.
+>
+> Symptom if you skip it: the Setup page starts, the dongle is listed by Windows, and Aether-gate says
+> **no devices found**.
 
 ### Raspberry Pi, or a Linux box
 
