@@ -313,15 +313,31 @@ def _new_session():
     return tok
 
 
+_hosts_cache = None
+
+
 def _allowed_hosts():
-    names = {"localhost", "aethergate.local"}
-    for n in (socket.gethostname(), socket.getfqdn()):
-        if n:
-            names.add(n.lower())
-            names.add(n.lower().split(".")[0] + ".local")
-    extra = os.environ.get("AETHER_GATE_SETUP_HOSTS", "")
-    names.update(h.strip().lower() for h in extra.split(",") if h.strip())
-    return names
+    """This machine's own names, worked out once.
+
+    NOT socket.getfqdn(): it does a reverse lookup that blocks for seconds on a
+    machine with no useful DNS (seen on macOS CI, where a request that should
+    have been refused instantly timed out at ten seconds). Per request it would
+    have made the page crawl. gethostname() is local and enough; anything else
+    goes in AETHER_GATE_SETUP_HOSTS.
+    """
+    global _hosts_cache
+    if _hosts_cache is None:
+        names = {"localhost", "aethergate.local"}
+        try:
+            h = (socket.gethostname() or "").lower()
+        except OSError:
+            h = ""
+        if h:
+            names.add(h)
+            names.add(h.split(".")[0] + ".local")
+        _hosts_cache = names
+    extra = os.environ.get("AETHER_GATE_SETUP_HOSTS", "")   # re-read: cheap, and editable live
+    return _hosts_cache | {h.strip().lower() for h in extra.split(",") if h.strip()}
 
 
 def _host_name(hostport):
