@@ -4,6 +4,22 @@ All notable changes to Aether-gate. Newest first.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-09-22
+
+**Installable.** Windows hams no longer need Python, a Pi image is attached to every release, and the Setup page
+is no longer open to everyone on the LAN.
+
+### Added
+- **Windows installer** — `Aether-gate-Setup-<ver>.exe`: Next, Next, Finish, then a Start-menu icon that opens the
+  Setup page in the browser. Installs **for you only, with no administrator password**; "all users" is still on the
+  wizard's first page. Includes **RTL-SDR dongle support** (SoapySDR + the rtl-sdr-blog V4 driver, built from the
+  same pinned versions the Pi appliance uses) and the Icom LAN adapters and sim.
+- **Portable zip** for Windows — unzip and run, no installer and no admin. The way in when an antivirus refuses an
+  unsigned installer.
+- **The Raspberry Pi image is attached to releases**, built in CI. The documented "flash and go" path had pointed
+  at a download that never existed.
+- **A privacy policy** (PRIVACY.md): the gate collects nothing and sends nothing about you.
+
 ### Security
 - **The Setup UI (`:8730`) now needs a setup PIN, and never hands out a radio
   password.** It listens on the LAN, and it could be read and driven by anyone
