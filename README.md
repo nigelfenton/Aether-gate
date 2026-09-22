@@ -102,8 +102,9 @@ Then:
 - **Windows will ask about the firewall** the first time the gate runs. Say **Allow**, or AetherSDR
   will not see the radio. (The all-users install can add that rule for you instead.)
 - **AetherSDR on the same PC?** Set *Network / advanced → Port* to **5992**.
-- This first Windows build covers **Icom LAN radios** (IC-9700, IC-705…) and the test sim. Kenwood/Yaesu
-  CAT and SDR dongles are coming. More in [packaging/windows](packaging/windows/README.md).
+- The Windows build covers **Icom LAN radios** (IC-9700, IC-705…), **RTL-SDR dongles** and the test sim.
+  Kenwood/Yaesu CAT is still to come. A dongle also needs the **WinUSB driver** bound to it once, with
+  [Zadig](https://zadig.akeo.ie/) — see [packaging/windows](packaging/windows/README.md).
 
 ### Raspberry Pi, or a Linux box
 

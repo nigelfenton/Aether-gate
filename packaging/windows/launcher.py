@@ -14,6 +14,7 @@ sys.executable is AetherGate.exe, which has no Python `-u`/`-m` options, so
 those three leading arguments are dropped here and the rest handed to the
 normal entry point. setup.py needs no Windows-specific branch.
 """
+import os
 import sys
 
 
@@ -58,10 +59,26 @@ def _guard_updater():
     updater.status, updater.install = status, install
 
 
+def _point_soapy_at_its_modules():
+    """SoapySDR finds drivers through SOAPY_SDR_PLUGIN_PATH, not beside the DLL.
+
+    The packaged program keeps them in a soapy-modules directory beside the
+    exe's own files;
+    without this, SoapySDR loads but reports no devices, which reads as "the
+    dongle is broken" rather than "the driver was not found". An operator's own
+    setting wins, so an out-of-tree driver can still be used.
+    """
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(sys.executable)))
+    mods = os.path.join(base, "soapy-modules")
+    if os.path.isdir(mods):
+        os.environ.setdefault("SOAPY_SDR_PLUGIN_PATH", mods)
+
+
 def main():
     sys.argv = [sys.argv[0]] + _strip_python_options(sys.argv[1:])
     if getattr(sys, "frozen", False):
         _guard_updater()
+        _point_soapy_at_its_modules()
     from aether_gate.__main__ import main as gate_main
     return gate_main()
 
