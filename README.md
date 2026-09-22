@@ -83,9 +83,24 @@ Download **`Aether-gate-Setup-<version>.exe`** from the
 Next → Next → Finish. Then open **Aether-gate Setup** from the Start menu: the Setup page opens in
 your browser. Pick your radio and hit **Start**.
 
-- Windows may say *"Windows protected your PC"* the first time. The installer is not code-signed
-  yet: click **More info → Run anyway**.
-- Keep the installer's **firewall** option ticked, or AetherSDR may not see the radio.
+It installs **for you only** and asks for no administrator password. (The wizard's first page
+also offers "all users", which does need one.)
+
+**If Windows or your antivirus objects.** The installer is not code-signed yet, so it looks
+"unknown" — a new program from a small project, rather than anything wrong with it:
+
+- *"Windows protected your PC"* → **More info → Run anyway**.
+- **Norton, McAfee and friends may block or quarantine it outright** on reputation alone. Either
+  restore it from quarantine, or use the **portable zip** on the same release page:
+  `Aether-gate-<version>-windows-portable.zip` — unzip it anywhere and run `AetherGate.exe`.
+  No installer, no admin, and nothing written outside that folder and `%USERPROFILE%\.aether-gate`.
+- Every download has a `.sha256` beside it if you want to check it arrived intact:
+  `certutil -hashfile Aether-gate-Setup-0.5.1.exe SHA256` (PowerShell: `Get-FileHash`).
+
+Then:
+
+- **Windows will ask about the firewall** the first time the gate runs. Say **Allow**, or AetherSDR
+  will not see the radio. (The all-users install can add that rule for you instead.)
 - **AetherSDR on the same PC?** Set *Network / advanced → Port* to **5992**.
 - This first Windows build covers **Icom LAN radios** (IC-9700, IC-705…) and the test sim. Kenwood/Yaesu
   CAT and SDR dongles are coming. More in [packaging/windows](packaging/windows/README.md).

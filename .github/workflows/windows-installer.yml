@@ -15,8 +15,10 @@
 #   workflow_dispatch with a tag: build and attach for an existing release.
 #
 # UNSIGNED: Windows SmartScreen shows "Windows protected your PC" on first run
-# (More info -> Run anyway) until the installer is code-signed. The release
-# notes and README say so.
+# (More info -> Run anyway) until the installer is code-signed, and a
+# reputation-based antivirus may refuse it outright -- Norton blocked the first
+# real install (2026-09-22). Hence the portable zip alongside the installer, and
+# the published checksums. The README says both.
 name: windows-installer
 
 on:
@@ -132,12 +134,29 @@ jobs:
             "{0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB)
           }
 
+      # A second route for a PC whose antivirus refuses an unsigned installer
+      # (Norton blocked the first real install, 2026-09-22): unzip anywhere and
+      # run AetherGate.exe. No installer, no admin, nothing written outside the
+      # folder and %USERPROFILE%\.aether-gate.
+      - name: Portable zip
+        shell: pwsh
+        run: |
+          $zip = "dist\Aether-gate-$env:AG_VERSION-windows-portable.zip"
+          Compress-Archive -Path dist\AetherGate\* -DestinationPath $zip -CompressionLevel Optimal
+          $line = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower() + "  " + (Split-Path $zip -Leaf) + "`n"
+          [IO.File]::WriteAllText("$zip.sha256", $line)
+          "{0}  {1:N1} MB" -f (Split-Path $zip -Leaf), ((Get-Item $zip).Length / 1MB)
+        env:
+          AG_VERSION: ${{ steps.ver.outputs.version }}
+
       - uses: actions/upload-artifact@v4
         with:
           name: aether-gate-windows-installer
           path: |
             dist/Aether-gate-Setup-*.exe
             dist/Aether-gate-Setup-*.exe.sha256
+            dist/Aether-gate-*-windows-portable.zip
+            dist/Aether-gate-*-windows-portable.zip.sha256
           retention-days: 5
 
   attach:

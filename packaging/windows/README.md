@@ -28,6 +28,24 @@ The installer lands in `dist\`.
   back after a reboot.
 - Saved radios and the setup PIN live in `%USERPROFILE%\.aether-gate`. Upgrades and uninstalls leave them alone.
 
+## Antivirus and signing
+
+The installer is **not code-signed**, so it has no reputation: SmartScreen warns, and a
+reputation-based antivirus may refuse it outright. **Norton blocked it on the first real install
+(2026-09-22)** before it could run.
+
+Until it is signed:
+
+- the **portable zip** (`Aether-gate-<ver>-windows-portable.zip`, built alongside the installer) is
+  the fallback — unzip and run, no installer and no admin;
+- every artifact ships a `.sha256`;
+- false positives are worth reporting to the vendor (Norton/Symantec and Microsoft both take
+  submissions), which is how an unsigned installer eventually gets whitelisted.
+
+Signing is the real fix, in rough order of fit: **SignPath Foundation** (free for open-source
+projects), **Azure Trusted Signing** (~$10/month, needs a verified business identity), or a
+traditional OV certificate (~$200–400/year).
+
 ## Phase 1 limits
 
 - **Radios:** Icom LAN (IC-9700, IC-705 and the rest of the Icom LAN family) and the sim. **Not yet:** hamlib CAT
