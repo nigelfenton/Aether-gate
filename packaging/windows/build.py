@@ -63,7 +63,11 @@ def sdr_args(sep):
     if os.path.exists(binding):
         args += ["--add-data", f"{binding}{sep}."]
     args += ["--paths", py, "--hidden-import", "SoapySDR"]
-    print("SDR stack:", len([a for a in args if a.endswith(".dll")]), "DLLs from", prefix)
+    dlls = len([a for a in args if ".dll" in a])
+    mods = len([a for a in args if "soapy-modules" in a])
+    print(f"SDR stack: {dlls} DLLs ({mods} driver module(s)) from {prefix}")
+    if not mods:
+        print("  WARNING: no Soapy driver module - SoapySDR will import but find no devices")
     return args
 
 
