@@ -101,7 +101,9 @@ Then:
 
 - **Windows will ask about the firewall** the first time the gate runs. Say **Allow**, or AetherSDR
   will not see the radio. (The all-users install can add that rule for you instead.)
-- **AetherSDR on the same PC?** Set *Network / advanced → Port* to **5992**.
+- **AetherSDR on the same PC?** Usually nothing to do — the gate binds its own address, so it and AE
+  coexist on 4992 (verified on Windows 11 with AE on the same laptop, 2026-09-22). Only if the gate
+  reports the port in use, or AE never lists it, set *Network / advanced → Port* to **5992**.
 - The Windows build covers **Icom LAN radios** (IC-9700, IC-705…), **RTL-SDR dongles** and the test sim.
   Kenwood/Yaesu CAT is still to come.
 
