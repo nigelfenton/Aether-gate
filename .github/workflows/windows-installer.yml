@@ -1,0 +1,164 @@
+# Aether-gate — build the Windows installer, and attach it to releases.
+#
+# WHY: the biggest group of hams run Windows, and until this there was no way in
+# for them that did not start with "install Python". This builds
+# Aether-gate-Setup-<ver>.exe: Next, Next, Finish -> a Start-menu icon that opens
+# the Setup page. See packaging/windows/ for the build script and installer.
+#
+# PHASE 1 CONTENTS: Setup page + Icom LAN adapters + sim (Python + numpy only).
+# Hamlib CAT radios and SDR dongles are not bundled yet.
+#
+# Same trigger shape as pi-image.yml:
+#   pull_request   touching the package or packaging: build + smoke-test only,
+#                  the installer kept as a 5-day run artifact. Nothing published.
+#   release        published on the upstream repo: build from the tag, attach.
+#   workflow_dispatch with a tag: build and attach for an existing release.
+#
+# UNSIGNED: Windows SmartScreen shows "Windows protected your PC" on first run
+# (More info -> Run anyway) until the installer is code-signed. The release
+# notes and README say so.
+name: windows-installer
+
+on:
+  pull_request:
+    paths:
+      - "aether_gate/**"
+      - "dossiers/**"
+      - "packaging/windows/**"
+      - ".github/workflows/windows-installer.yml"
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build and attach to (e.g. v0.5.1)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-installer-${{ github.event_name }}-${{ github.event.release.tag_name || inputs.tag || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build the Windows installer
+    runs-on: windows-latest
+    timeout-minutes: 45
+    outputs:
+      tag: ${{ steps.ref.outputs.tag }}
+    steps:
+      - name: Resolve what to build
+        id: ref
+        shell: bash
+        run: |
+          case "${{ github.event_name }}" in
+            release)           tag="${{ github.event.release.tag_name }}" ;;
+            workflow_dispatch) tag="${{ inputs.tag }}" ;;
+            *)                 tag="" ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Building: ${tag:-the PR head}"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.tag || github.sha }}
+
+      # A tag cut before packaging/windows existed has none: take the packaging
+      # (only) from the commit this workflow runs at, as pi-image.yml does for
+      # build-image.sh. The gate package itself stays exactly as tagged.
+      - name: Use this workflow's packaging for a tag build
+        if: steps.ref.outputs.tag != ''
+        shell: bash
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ github.sha }}"
+          rm -rf packaging/windows && mkdir -p packaging
+          git archive "${{ github.sha }}" packaging/windows | tar -x
+          ls packaging/windows
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build dependencies
+        run: python -m pip install numpy pyinstaller
+
+      - name: Build the program folder
+        run: python packaging/windows/build.py
+
+      - name: Smoke-test the built program (no radio)
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=dist/AetherGate/AetherGate.exe
+          "$exe" --help | head -3
+          # the gate on its own: sim adapter, same-host ports, control panel up
+          "$exe" --adapter sim --model FLEX-6700 --port 5992 --ctl-port 8741 > gate.log 2>&1 &
+          gate=$!
+          ok=0
+          for i in $(seq 30); do
+            if curl -fsS -m 2 http://127.0.0.1:8741/diagnostics | grep -q SimAdapter; then ok=1; break; fi
+            sleep 1
+          done
+          kill $gate 2>/dev/null || true
+          cat gate.log | tail -5
+          [ "$ok" = 1 ] || { echo "the frozen gate never answered on its control port"; exit 1; }
+          echo "frozen gate OK"
+
+      - name: Version for the installer
+        id: ver
+        shell: bash
+        run: |
+          v=$(python -c "import re;print(re.search(r'^__version__\s*=\s*\"([^\"]+)\"',open('aether_gate/__init__.py',encoding='utf-8').read(),re.M).group(1))")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Build the installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue
+          if (-not $iscc) {
+            $cand = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+            if (-not (Test-Path $cand)) { choco install innosetup -y --no-progress | Out-Null }
+            $iscc = Get-Item $cand
+          }
+          & $iscc.Source /DAppVersion=${{ steps.ver.outputs.version }} packaging\windows\installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem dist\Aether-gate-Setup-*.exe | ForEach-Object {
+            # plain LF, not Out-File's CRLF: sha256sum -c on the Linux attach job
+            # would otherwise read the filename with a trailing carriage return and fail.
+            $line = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() + "  " + $_.Name + "`n"
+            [IO.File]::WriteAllText($_.FullName + ".sha256", $line)
+            "{0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB)
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aether-gate-windows-installer
+          path: |
+            dist/Aether-gate-Setup-*.exe
+            dist/Aether-gate-Setup-*.exe.sha256
+          retention-days: 5
+
+  attach:
+    name: attach to the release
+    needs: build
+    # Upstream only: a fork builds and verifies but never publishes anything.
+    if: >-
+      github.repository == 'nigelfenton/Aether-gate' &&
+      (github.event_name == 'release' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: aether-gate-windows-installer
+          path: out
+      - name: Verify the checksum before publishing
+        run: cd out && sha256sum -c ./*.sha256
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: gh release upload "$TAG" out/* --clobber --repo "$GITHUB_REPOSITORY"

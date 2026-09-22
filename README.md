@@ -76,6 +76,27 @@ and how to add a radio.
 
 ## Quick start
 
+### Windows: the installer
+
+Download **`Aether-gate-Setup-<version>.exe`** from the
+[latest release](https://github.com/nigelfenton/Aether-gate/releases/latest), run it, and click
+Next → Next → Finish. Then open **Aether-gate Setup** from the Start menu: the Setup page opens in
+your browser. Pick your radio and hit **Start**.
+
+- Windows may say *"Windows protected your PC"* the first time. The installer is not code-signed
+  yet: click **More info → Run anyway**.
+- Keep the installer's **firewall** option ticked, or AetherSDR may not see the radio.
+- **AetherSDR on the same PC?** Set *Network / advanced → Port* to **5992**.
+- This first Windows build covers **Icom LAN radios** (IC-9700, IC-705…) and the test sim. Kenwood/Yaesu
+  CAT and SDR dongles are coming. More in [packaging/windows](packaging/windows/README.md).
+
+### Raspberry Pi, or a Linux box
+
+Flash the ready-made Pi image from the release: see **[PI_APPLIANCE.md](PI_APPLIANCE.md)**. On any
+Linux machine or NAS with Docker, a prebuilt container is published for every release:
+`ghcr.io/nigelfenton/aether-gate:full` (every adapter) or `:lan` (Icom LAN only). See
+**[docs/DOCKER.md](docs/DOCKER.md)**.
+
 ### Try it with no hardware
 
 ```bash
