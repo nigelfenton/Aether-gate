@@ -163,6 +163,13 @@ rsync -a --exclude .git --exclude attic --exclude imagework --exclude out \
 # 4) the in-chroot stage: service user, installer, hostname, cleanup
 # ------------------------------------------------------------------------------
 say "Chroot stage (installer $SDR_ARG $SDRPLAY_ARG) — the SDR builds take a while"
+# ⚠ UNQUOTED HEREDOC: $VARS below expand on the HOST, as intended -- and so do
+# backticks and $( ), even inside the script's own comments. A backquoted
+# `dpkg-reconfigure keyboard-configuration` in a comment here once RAN on the
+# build host (reconfiguring its keyboard) and pasted its output into the stage
+# script, where a line of it then ran as a command (found on the GitHub Arm
+# runner, 2026-09-22; a Pi host without that package printed nothing, so it hid).
+# Keep backticks and $( ) out of this block unless the host is meant to run them.
 cat > "$ROOT/tmp/image-stage.sh" <<STAGE
 #!/bin/bash
 set -euo pipefail
@@ -187,7 +194,7 @@ sed -i "s/\braspberrypi\b/$IMG_HOSTNAME/g" /etc/hosts
 # has nothing to ask and nobody to ask it.
 #
 # Left enabled it does real damage: on a headless boot it launches
-# `dpkg-reconfigure keyboard-configuration` on tty8, waits forever for input
+# dpkg-reconfigure keyboard-configuration on tty8, waits forever for input
 # nobody can give, and HOLDS /var/cache/debconf/config.dat. Every later
 # apt/dpkg configure then fails with "DbDriver config is locked" — on a Pi 4
 # that silently broke ~250 package configures during a desktop install, and

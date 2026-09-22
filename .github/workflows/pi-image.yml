@@ -1,0 +1,122 @@
+# Aether-gate — build the Raspberry Pi appliance image, and attach it to releases.
+#
+# WHY THIS EXISTS: PI_APPLIANCE.md's "easy way" tells a newcomer to download
+# aether-gate-pi-<ver>.img.xz from the Releases page, and until this workflow no
+# release carried one — the recommended path ended at step 1. deploy/build-image.sh
+# already builds the image; this runs it where everyone can get the result.
+#
+# WHERE IT RUNS: a GitHub-hosted Arm runner (ubuntu-24.04-arm, aarch64). The
+# script customises the official Pi OS image in a chroot and never boots it, so it
+# needs a native aarch64 host with root, loop devices and chroot — which this is.
+# No Pi, no qemu, no secrets.
+#
+# WHAT IT PUBLISHES: the standard image only — SDR stack included, SDRplay NOT
+# (build-image.sh's default, --no-sdrplay). SDRplay's API licence forbids
+# redistribution; see PI_APPLIANCE.md. Never add --with-sdrplay here.
+#
+# TRIGGERS
+#   pull_request   touching the installer/image/package: build only, keep the
+#                  image as a short-lived run artifact so a reviewer can flash it.
+#                  Nothing is published from a PR.
+#   release        published on the upstream repo: build from the tag and attach
+#                  .img.xz + .sha256 to that release.
+#   workflow_dispatch with a tag: (re)build and attach for an existing release,
+#                  e.g. to give v0.5.1 the image it was published without.
+name: pi-image
+
+on:
+  pull_request:
+    paths:
+      - "deploy/build-image.sh"
+      - "deploy/install-pi.sh"
+      - "deploy/systemd/aether-gate-setup.service"
+      - "aether_gate/**"
+      - ".github/workflows/pi-image.yml"
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build and attach to (e.g. v0.5.1)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pi-image-${{ github.event_name }}-${{ github.event.release.tag_name || inputs.tag || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build the Pi image (aarch64, chroot)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    outputs:
+      tag: ${{ steps.ref.outputs.tag }}
+    steps:
+      - name: Resolve what to build
+        id: ref
+        run: |
+          case "${{ github.event_name }}" in
+            release)           tag="${{ github.event.release.tag_name }}" ;;
+            workflow_dispatch) tag="${{ inputs.tag }}" ;;
+            *)                 tag="" ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          # NB no apostrophe in the fallback: bash still treats ' as a quote inside
+          # ${var:-word}, even within double quotes, and the step dies on EOF.
+          echo "Building: ${tag:-the PR head}"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.tag || github.sha }}
+          # build-image.sh names the image from `git describe --tags`; a shallow
+          # clone has no tags and the file would be called aether-gate-pi-<sha>.
+          fetch-depth: 0
+
+      - name: Host tools build-image.sh checks for
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y parted e2fsprogs xz-utils curl rsync
+
+      - name: Build the image
+        run: sudo ./deploy/build-image.sh --out="$PWD/out"
+
+      - name: Show what was built
+        run: |
+          ls -lh out/
+          cat out/*.sha256
+
+      - name: Keep it as a run artifact (PRs and dispatches)
+        uses: actions/upload-artifact@v4
+        with:
+          name: aether-gate-pi-image
+          path: out/*
+          retention-days: 5
+          compression-level: 0   # already xz; zipping again only costs time
+
+  attach:
+    name: attach to the release
+    needs: build
+    # Upstream only: a fork builds and verifies but never publishes anything.
+    if: >-
+      github.repository == 'nigelfenton/Aether-gate' &&
+      (github.event_name == 'release' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: aether-gate-pi-image
+          path: out
+
+      - name: Verify the checksum before publishing
+        run: cd out && sha256sum -c ./*.sha256
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: gh release upload "$TAG" out/* --clobber --repo "$GITHUB_REPOSITORY"
