@@ -95,6 +95,16 @@ def latest_release(include_prerelease=False, timeout=_TIMEOUT):
             "url": best.get("html_url")}
 
 
+def frozen_program():
+    """True in the packaged Windows program (PyInstaller).
+
+    There the gate is not a tree of .py files this module can swap: it is an
+    installed program, and its update is the next release's installer. So the
+    one-click install is refused and the page says where to get the installer.
+    """
+    return bool(getattr(sys, "frozen", False))
+
+
 def status(current_version, include_prerelease=False):
     """What the web UI shows. Always answers, even offline."""
     rel = latest_release(include_prerelease)
@@ -102,10 +112,14 @@ def status(current_version, include_prerelease=False):
         return {"current": current_version, "latest": None, "available": False,
                 "checked": True, "message": "Could not reach GitHub to check for updates."}
     avail = _newer(rel["tag"], current_version)
+    msg = (f"Update available: {rel['tag']} (you have {current_version})"
+           if avail else f"You are up to date ({current_version}).")
+    if avail and frozen_program():
+        msg += (" -- download the new installer (Aether-gate-Setup .exe) from the release page"
+                " and run it; your saved radios are kept.")
     return {"current": current_version, "latest": rel["tag"], "available": avail,
             "checked": True, "notes": rel["notes"][:2000], "url": rel["url"],
-            "message": (f"Update available: {rel['tag']} (you have {current_version})"
-                        if avail else f"You are up to date ({current_version}).")}
+            "installer": frozen_program(), "message": msg}
 
 
 def _download(url, dest_path, timeout=_TIMEOUT):
@@ -178,6 +192,11 @@ def install(tag_or_none, live_pkg_dir, *, logfn=print, include_prerelease=False,
     swap itself is two renames; the import check is what catches a release that
     is intact but broken on THIS machine (missing dependency, wrong Python).
     """
+    if frozen_program():
+        return {"ok": False,
+                "message": ("This is the installed Windows program: to update, download the new "
+                            "installer (Aether-gate-Setup .exe) from the release page and run it. "
+                            "Your saved radios and setup PIN are kept.")}
     live_pkg_dir = os.path.abspath(live_pkg_dir)
     parent = os.path.dirname(live_pkg_dir)
     stamp = time.strftime("%Y%m%d-%H%M%S")
