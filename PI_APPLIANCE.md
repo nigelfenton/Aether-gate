@@ -33,7 +33,11 @@ fights the source builds.
 Skip the install entirely — flash a ready-made appliance image:
 
 1. Download the latest `aether-gate-pi-<ver>.img.xz` (+ `.sha256`) from the
-   [releases page](https://github.com/nigelfenton/Aether-gate/releases).
+   [releases page](https://github.com/nigelfenton/Aether-gate/releases). Each release
+   gets its image attached automatically by
+   [`.github/workflows/pi-image.yml`](.github/workflows/pi-image.yml), which runs
+   `deploy/build-image.sh` on a GitHub Arm runner. Check it with
+   `sha256sum -c aether-gate-pi-<ver>.img.xz.sha256` before flashing.
 2. Flash it with **Raspberry Pi Imager** → *Use custom image*. Imager's OS
    customisation (⚙ — your username, WiFi, SSH) **works on this image exactly
    as on stock Pi OS** — set your WiFi there if the Pi won't be on Ethernet.
