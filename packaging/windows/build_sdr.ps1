@@ -83,12 +83,30 @@ New-Item -ItemType Directory -Force (Join-Path $Prefix "bin") | Out-Null
 Copy-Item $luDll (Join-Path $Prefix "bin") -Force
 
 # --- rtl-sdr-blog fork (the V4 driver) --------------------------------------
-Say "rtl-sdr-blog $RTLSDR_COMMIT"
+# LIBRARY ONLY. `--target install` also builds rtl_fm / rtl_tcp / rtl_power /
+# rtl_adsb, and those include <pthread.h>, which MSVC does not have: the whole
+# build then fails with C1083 on a command-line tool the gate never uses. So we
+# build rtlsdr_shared and place its files ourselves.
+Say "rtl-sdr-blog $RTLSDR_COMMIT (library only -- the CLI tools need pthreads)"
 $rtl = Join-Path $Work "rtl-sdr-blog"
 Clone-Pinned $RTLSDR_REPO $RTLSDR_COMMIT $rtl
-Build-CMake $rtl @("-DLIBUSB_INCLUDE_DIRS=$luInc",
-                   "-DLIBUSB_LIBRARIES=$luLib",
-                   "-DDETACH_KERNEL_DRIVER=OFF")
+$rtlBuild = Join-Path $rtl "build"
+New-Item -ItemType Directory -Force $rtlBuild | Out-Null
+cmake -S $rtl -B $rtlBuild -A x64 -DCMAKE_BUILD_TYPE=Release `
+      -DCMAKE_INSTALL_PREFIX=$Prefix -DLIBUSB_INCLUDE_DIRS=$luInc `
+      -DLIBUSB_LIBRARIES=$luLib -DDETACH_KERNEL_DRIVER=OFF
+if ($LASTEXITCODE -ne 0) { throw "cmake configure failed for rtl-sdr-blog" }
+cmake --build $rtlBuild --config Release --target rtlsdr_shared
+if ($LASTEXITCODE -ne 0) { throw "cmake build failed for rtl-sdr-blog (rtlsdr_shared)" }
+
+New-Item -ItemType Directory -Force (Join-Path $Prefix "lib"), (Join-Path $Prefix "include") | Out-Null
+$rtlDll = Get-ChildItem -Path $rtlBuild -Recurse -Filter "rtlsdr.dll" | Select-Object -First 1
+$rtlLib = Get-ChildItem -Path $rtlBuild -Recurse -Filter "rtlsdr.lib" | Select-Object -First 1
+if (-not $rtlDll -or -not $rtlLib) { throw "rtlsdr.dll/.lib not found after the build" }
+Copy-Item $rtlDll.FullName (Join-Path $Prefix "bin") -Force
+Copy-Item $rtlLib.FullName (Join-Path $Prefix "lib") -Force
+Copy-Item (Join-Path $rtl "includetl-sdr.h") (Join-Path $Prefix "include") -Force
+Copy-Item (Join-Path $rtl "includetl-sdr_export.h") (Join-Path $Prefix "include") -Force
 
 # --- SoapySDR core + Python binding -----------------------------------------
 Say "SoapySDR $SOAPY_COMMIT (with the Python 3 binding)"
