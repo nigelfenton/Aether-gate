@@ -150,6 +150,16 @@ jobs:
               exit 1 ;;
           esac
 
+          # "0 dongles" is right on a runner with no hardware -- and identical to
+          # what a MISSING driver module produces, which is the failure this
+          # packaging is most likely to have. So check the module is in the build
+          # rather than inferring it from a device count.
+          ls -l dist/AetherGate/_internal/soapy-modules/ || {
+            echo "no soapy-modules directory: the RTL driver module did not travel"; exit 1; }
+          ls dist/AetherGate/_internal/soapy-modules/ | grep -qi rtl || {
+            echo "the RTL driver module is missing from soapy-modules"; exit 1; }
+          echo "RTL driver module present OK"
+
       - name: Version for the installer
         id: ver
         shell: bash
