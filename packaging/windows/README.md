@@ -72,5 +72,14 @@ dongle claims to be a TV tuner and SoapySDR will not open it.
   anyway**. That goes away once the installer is code-signed.
 - **Updates:** the page tells you when a new release is out. Update by running the new installer; the in-page
   one-click update is for the Pi and source installs.
-- **AetherSDR on the same PC:** set **Network / advanced → Port** to **5992**, so the gate does not collide with
-  AetherSDR's own port 4992.
+- **AetherSDR on the same PC:** usually nothing to do. The gate binds its own address, so it and AE coexisted on
+  4992 on a Windows 11 laptop (2026-09-22) with no change. If the gate reports the port in use, or AE never lists
+  the radio, set **Network / advanced → Port** to **5992**.
+
+## Field notes (first real Windows install, ASUS laptop, 2026-09-22)
+
+- **Norton blocked the unsigned installer.** The operator had to override it. That is not an instruction we can
+  give a stranger: **code signing is the fix** (see above), and the portable zip is the interim route.
+- **Zadig WAS needed** for the RTL dongle, on a machine that had run other SDR software. Do not assume a PC that
+  "already does SDR" has WinUSB bound to *this* dongle.
+- **No port change was needed** with AetherSDR on the same PC.
