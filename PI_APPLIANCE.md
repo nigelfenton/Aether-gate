@@ -191,8 +191,12 @@ entirely.
 
 1. Power on. Give it a minute (first boot + any build finishing if you just installed).
 2. Browse **`http://aethergate.local:8730`** (or `http://<pi-ip>:8730`).
-3. Pick your radio family, fill the connection fields, **Start**.
-4. Save it as a **profile** and tick **"connect on launch"** so it comes up on its own next boot.
+3. **Choose a setup PIN** (first visit only). The page starts radios and keeps their
+   logins, so it asks for the PIN from then on. Forgot it? Delete
+   `~/.aether-gate/setup-auth.json` on the gate (for the image's service user:
+   `sudo rm /home/aethergate/.aether-gate/setup-auth.json`) and reload.
+4. Pick your radio family, fill the connection fields, **Start**.
+5. Save it as a **profile** and tick **"connect on launch"** so it comes up on its own next boot.
 
 ## Always-on radio (recommended for a dedicated box)
 
