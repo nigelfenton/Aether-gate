@@ -4,6 +4,25 @@ All notable changes to Aether-gate. Newest first.
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-09-22
+
+### Fixed
+- **A USB CI-V radio (IC-7300, or an IC-9700 over USB) could not connect: pyserial was never
+  installed.** Reported by a user whose IC-7300 failed at Start with nothing but "pyserial is not
+  installed" — from a radio that was plugged in and working. The Icom USB CI-V adapters need it, and
+  nothing shipped it: not the Pi appliance installer, not the container, not the Windows program.
+  Wherever it worked, it worked by accident, because something else had pulled pyserial in.
+  It now travels on all three, and the Windows build fails if it does not.
+- **The Setup page's Known info now reports pyserial** alongside numpy, SoapySDR and hamlib, naming
+  the radios that need it. A missing dependency was previously invisible until the operator pressed
+  Start on a working radio.
+
+### Added
+- **macOS instructions** (README), verified on a Mac mini (M1, macOS 26.6.2). The two things that stop
+  a newcomer: macOS ships Python 3.9, which is too old and fails with an unreadable `TypeError`; and
+  `pip install` is refused on Homebrew's Python, so numpy comes from `brew install numpy`. Also the
+  venv recipe for pyserial, since Homebrew has no formula for it.
+
 ## [0.5.2] - 2026-09-22
 
 **Installable.** Windows hams no longer need Python, a Pi image is attached to every release, and the Setup page
