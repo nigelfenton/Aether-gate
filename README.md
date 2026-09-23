@@ -133,40 +133,41 @@ Linux machine or NAS with Docker, a prebuilt container is published for every re
 
 ### macOS
 
-No packaged Mac build yet — you run it from the source, which needs a terminal but not much else.
-Everything below is Homebrew plus Python.
+No packaged Mac build yet — you run it from the source. Two commands of setup, then one to start it.
+Verified on a Mac mini (Apple Silicon, macOS 26.6.2) with [Homebrew](https://brew.sh) installed.
 
 ```bash
-brew install python           # if you do not already have a Python 3.11+
+brew install python numpy                  # see both notes below — this is not optional
 git clone https://github.com/nigelfenton/Aether-gate.git
 cd Aether-gate
-python3 -m pip install numpy
-python3 -m aether_gate         # opens the Setup page in your browser
+python3 -m aether_gate                     # opens the Setup page in your browser
 ```
 
-That much runs **Icom LAN radios** (IC-9700, IC-705…) and the test sim, which need nothing but Python and
-numpy. For the other two radio families:
+That runs **Icom LAN radios** (IC-9700, IC-705…) and the test sim. For the other radio families:
 
 ```bash
-brew install hamlib                    # Kenwood / Yaesu / any CAT rig (provides rigctld)
-brew install soapysdr soapyrtlsdr      # RTL-SDR dongles, and the IF-tap spectrum for CAT rigs
+brew install hamlib                        # Kenwood / Yaesu / any CAT rig (installs rigctld)
+brew install soapysdr soapyrtlsdr          # RTL-SDR dongles, and the IF-tap spectrum for CAT rigs
 ```
 
-Two macOS-specific traps, both of which look like "the dongle is broken":
+Check what it found: the Setup page's **Known info / status** link lists numpy, SoapySDR, hamlib and any
+dongles it can see.
 
-- ⚠️ **Homebrew builds SoapySDR's Python binding for Homebrew's own Python**, not for whichever `python3`
-  happens to be first on your PATH. Run the gate with that same interpreter or `import SoapySDR` fails.
-  `brew deps soapysdr | grep python` names it — today `python@3.14`, so:
-  ```bash
-  /opt/homebrew/bin/python3.14 -m pip install numpy
-  /opt/homebrew/bin/python3.14 -m aether_gate
-  ```
-  (On an Intel Mac, Homebrew lives in `/usr/local` rather than `/opt/homebrew`.)
-- ⚠️ **An RTL-SDR Blog V4 needs the Blog fork of librtlsdr.** Homebrew ships the stock driver, which does not
-  drive a V4 properly — the same reason `deploy/install-pi.sh` builds the fork on the Pi. Earlier dongles
-  (R820T2 and friends) are fine with the Homebrew build.
+**Why `brew install python numpy`, and not the obvious alternatives:**
 
-No Zadig equivalent is needed: macOS lets a program claim a USB dongle without changing drivers.
+- ⚠️ **The Python that comes with macOS is too old.** It is 3.9, the gate needs 3.10 or newer, and the failure
+  is not a helpful message but `TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'`. Homebrew's
+  `python` is 3.14, and once installed, `python3` in a new Terminal window is Homebrew's.
+- ⚠️ **`pip install numpy` is refused** on Homebrew's Python: `error: externally-managed-environment`. That is
+  Homebrew's policy, not a fault — use `brew install numpy`, as above. (If you prefer a virtual environment,
+  create it with `--system-site-packages`, or it will not see SoapySDR either.)
+- ⚠️ **Whatever installs SoapySDR decides which Python can use it.** Homebrew builds its binding for Homebrew's
+  own Python, so running the gate with `/usr/bin/python3` gives `ModuleNotFoundError: No module named
+  'SoapySDR'` even though the dongle support is installed. Use the same `python3` throughout.
+- **RTL-SDR Blog V4:** Homebrew ships Osmocom's `librtlsdr` (2.0.3), not the RTL-SDR Blog fork that
+  `deploy/install-pi.sh` builds for the Pi. Whether that drives a V4 properly has not been tested here; if a V4
+  misbehaves on macOS, build the Blog fork and point SoapySDR at it.
+- Unlike Windows, macOS needs **no driver-swapping step** (no Zadig equivalent).
 
 ### Try it with no hardware
 
