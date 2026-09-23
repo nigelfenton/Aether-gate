@@ -131,6 +131,43 @@ Linux machine or NAS with Docker, a prebuilt container is published for every re
 `ghcr.io/nigelfenton/aether-gate:full` (every adapter) or `:lan` (Icom LAN only). See
 **[docs/DOCKER.md](docs/DOCKER.md)**.
 
+### macOS
+
+No packaged Mac build yet — you run it from the source, which needs a terminal but not much else.
+Everything below is Homebrew plus Python.
+
+```bash
+brew install python           # if you do not already have a Python 3.11+
+git clone https://github.com/nigelfenton/Aether-gate.git
+cd Aether-gate
+python3 -m pip install numpy
+python3 -m aether_gate         # opens the Setup page in your browser
+```
+
+That much runs **Icom LAN radios** (IC-9700, IC-705…) and the test sim, which need nothing but Python and
+numpy. For the other two radio families:
+
+```bash
+brew install hamlib                    # Kenwood / Yaesu / any CAT rig (provides rigctld)
+brew install soapysdr soapyrtlsdr      # RTL-SDR dongles, and the IF-tap spectrum for CAT rigs
+```
+
+Two macOS-specific traps, both of which look like "the dongle is broken":
+
+- ⚠️ **Homebrew builds SoapySDR's Python binding for Homebrew's own Python**, not for whichever `python3`
+  happens to be first on your PATH. Run the gate with that same interpreter or `import SoapySDR` fails.
+  `brew deps soapysdr | grep python` names it — today `python@3.14`, so:
+  ```bash
+  /opt/homebrew/bin/python3.14 -m pip install numpy
+  /opt/homebrew/bin/python3.14 -m aether_gate
+  ```
+  (On an Intel Mac, Homebrew lives in `/usr/local` rather than `/opt/homebrew`.)
+- ⚠️ **An RTL-SDR Blog V4 needs the Blog fork of librtlsdr.** Homebrew ships the stock driver, which does not
+  drive a V4 properly — the same reason `deploy/install-pi.sh` builds the fork on the Pi. Earlier dongles
+  (R820T2 and friends) are fine with the Homebrew build.
+
+No Zadig equivalent is needed: macOS lets a program claim a USB dongle without changing drivers.
+
 ### Try it with no hardware
 
 ```bash
