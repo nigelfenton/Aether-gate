@@ -6,7 +6,7 @@
 
 Run from the repository root, on Windows, with numpy and pyinstaller installed:
 
-    python -m pip install numpy pyinstaller
+    python -m pip install numpy pyserial pyinstaller
     python packaging/windows/build.py
 
 The same script runs in .github/workflows/windows-installer.yml; the Inno Setup
@@ -84,6 +84,10 @@ def main():
         "--onedir",
         "--console",            # the gate prints its status; closing the window stops it
         "--collect-submodules", "aether_gate",
+        # pyserial is imported lazily inside the Icom USB adapters, so
+        # PyInstaller does not see it by following imports.
+        "--hidden-import", "serial",
+        "--hidden-import", "serial.tools.list_ports",
         # vendored radio dossiers: dossiers.py looks for <package-parent>/dossiers
         "--add-data", f"{os.path.join(ROOT, 'dossiers')}{sep}dossiers",
         "--add-data", f"{os.path.join(ROOT, 'LICENSE')}{sep}.",

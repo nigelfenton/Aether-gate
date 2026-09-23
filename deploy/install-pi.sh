@@ -164,7 +164,10 @@ say "Aether-gate Pi installer  (user=$GATE_USER  gate=$GATE_DIR  with-sdr=$WITH_
 # ------------------------------------------------------------------------------
 say "apt: base + build prerequisites"
 # tcpdump: an appliance you can't wiretap is one you can't diagnose (2026-08-01)
-APT_PKGS=(python3 python3-numpy python3-dev libhamlib-utils avahi-daemon tcpdump)
+# python3-serial: USB CI-V radios (IC-7300, IC-9700 over USB) need pyserial,
+# and nothing installed it -- an IC-7300 failed at Start with "pyserial is
+# not installed" on an otherwise healthy appliance.
+APT_PKGS=(python3 python3-numpy python3-dev python3-serial libhamlib-utils avahi-daemon tcpdump)
 if [ "$WITH_SDR" = 1 ]; then
   APT_PKGS+=(build-essential cmake git pkg-config libusb-1.0-0-dev swig curl)
 fi

@@ -65,7 +65,8 @@ dongle claims to be a TV tuner and SoapySDR will not open it.
 
 ## Limits
 
-- **Radios:** Icom LAN (IC-9700, IC-705 and the rest of the family), RTL-SDR dongles, and the sim. **Not yet:**
+- **Radios:** Icom LAN (IC-9700, IC-705 and the rest of the family), **Icom USB CI-V (IC-7300)**, RTL-SDR
+  dongles, and the sim. **Not yet:**
   hamlib CAT radios — Kenwood/Yaesu need `rigctld.exe`, which is not bundled. The Setup page's *Known info* page
   says what is missing.
 - **Unsigned:** Windows SmartScreen shows *"Windows protected your PC"* the first time. Click **More info → Run

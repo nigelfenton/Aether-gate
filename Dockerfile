@@ -34,7 +34,9 @@ LABEL org.opencontainers.image.title="aether-gate" \
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-RUN pip install --no-cache-dir numpy
+# pyserial: USB CI-V radios (IC-7300, IC-9700 over USB). Small, pure Python,
+# and its absence only shows up as a failure to connect a radio that works.
+RUN pip install --no-cache-dir numpy pyserial
 
 WORKDIR /app
 COPY aether_gate/ /app/aether_gate/
