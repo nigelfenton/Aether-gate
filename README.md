@@ -150,6 +150,18 @@ brew install hamlib                        # Kenwood / Yaesu / any CAT rig (inst
 brew install soapysdr soapyrtlsdr          # RTL-SDR dongles, and the IF-tap spectrum for CAT rigs
 ```
 
+**An IC-7300, or an IC-9700 over USB?** Those talk CI-V over a USB serial port, which needs **pyserial** —
+and Homebrew has no formula for it. Run the gate from a virtual environment built to keep Homebrew's
+packages visible:
+
+```bash
+python3 -m venv --system-site-packages ~/.aether-gate
+~/.aether-gate/bin/pip install pyserial
+~/.aether-gate/bin/python -m aether_gate
+```
+
+`--system-site-packages` matters: without it the environment cannot see Homebrew's numpy or SoapySDR either.
+
 Check what it found: the Setup page's **Known info / status** link lists numpy, SoapySDR, hamlib and any
 dongles it can see.
 

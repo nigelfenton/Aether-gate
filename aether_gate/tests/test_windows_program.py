@@ -75,9 +75,25 @@ def test_launcher_guards_an_older_updater():
     print("ok  launcher: an updater without the guard is guarded by the packaging")
 
 
+def test_health_page_names_pyserial():
+    """A USB CI-V radio (IC-7300) needs pyserial, and its absence used to show up
+    only as "pyserial is not installed" when the operator pressed Start. The
+    health page must say so either way -- present or missing."""
+    from aether_gate import setup
+    rows = {r["label"]: r for r in setup._known_checks()}
+    assert "pyserial" in rows, sorted(rows)
+    row = rows["pyserial"]
+    try:
+        import serial          # noqa: F401
+        assert row["status"] == "ok", row
+    except ImportError:
+        assert row["status"] == "warn" and "IC-7300" in row["detail"], row
+    print("ok  health page: pyserial is reported, present or missing")
+
+
 def main():
     tests = [test_shim_drops_the_python_options, test_frozen_program_refuses_the_file_swap,
-             test_launcher_guards_an_older_updater]
+             test_launcher_guards_an_older_updater, test_health_page_names_pyserial]
     for t in tests:
         try:
             t()

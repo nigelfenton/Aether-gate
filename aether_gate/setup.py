@@ -556,6 +556,16 @@ def _known_checks():
     except Exception:
         add("Dependencies", "numpy", "MISSING", "bad", "required for the core FFT")
     try:
+        import serial
+        add("Dependencies", "pyserial", getattr(serial, "__version__", "installed"), "ok")
+    except Exception:
+        # An IC-7300 (and a 9700 over USB CI-V) cannot open its port without it.
+        # Reported by a user whose IC-7300 would not connect: the only sign was
+        # "pyserial is not installed" at Start, from a radio that was plugged in
+        # and working. A dependency the operator cannot see is one they cannot fix.
+        add("Dependencies", "pyserial", "not installed", "warn",
+            "needed for USB CI-V radios (IC-7300, IC-9700 over USB)")
+    try:
         import SoapySDR
         add("Dependencies", "SoapySDR", "installed", "ok")
         try:

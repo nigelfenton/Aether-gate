@@ -84,7 +84,7 @@ jobs:
           python-version: "3.12"
 
       - name: Build dependencies
-        run: python -m pip install numpy pyinstaller
+        run: python -m pip install numpy pyserial pyinstaller
 
       # --- the SDR stack (SoapySDR + rtl-sdr-blog V4 + libusb) ----------------
       # Built from the same pinned commits as deploy/install-pi.sh, so a dongle
@@ -144,7 +144,12 @@ jobs:
             sleep 1
           done
           kill $ui 2>/dev/null || true
-          echo "$known" | grep -oE '"label": "(SoapySDR|dongles|numpy)", "value": "[^"]*"' || true
+          echo "$known" | grep -oE '"label": "(SoapySDR|dongles|numpy|pyserial)", "value": "[^"]*"' || true
+          case "$known" in
+            *'"label": "pyserial", "value": "not installed"'*)
+              echo "pyserial did not travel - USB CI-V radios (IC-7300) would not connect"
+              exit 1 ;;
+          esac
           case "$known" in
             *'"label": "SoapySDR", "value": "installed"'*)
               echo "SoapySDR in the packaged program OK" ;;
