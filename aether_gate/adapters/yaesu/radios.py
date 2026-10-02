@@ -71,10 +71,28 @@ REGISTRY = {
         notes="HF/6m SDR rig. Built-in scope NOT over CAT -> IF-tap dongle. hamlib -m 1042 "
               "(VERIFY the id against the target box's `rigctl -l`)."),
 
-    "FT-710": YaesuRadio(
-        model="FT-710", hamlib_model=1046, advertise="FLEX-6600",
+    # FTDX101D and FTDX101MP share the CAT protocol and band set; hamlib gives them
+    # separate ids (the MP is the 200 W version), so each gets its own row.
+    "FTDX101D": YaesuRadio(
+        model="FTDX101D", hamlib_model=1040, advertise="FLEX-6600",
         bands=_HF + _6M, spectrum="soapy-iftap", hf_dongle_needed=True, verified=False,
-        notes="HF/6m SDR rig. hamlib -m 1046 (VERIFY id vs target box). No CAT scope."),
+        notes="HF/6m SDR rig. hamlib -m 1040 (RIG_MODEL_FTDX101D in hamlib riglist.h, "
+              "checked 2026-10-01; VERIFY vs the target box's `rigctl -l`). Built-in scope "
+              "NOT over CAT -> IF-tap dongle."),
+
+    "FTDX101MP": YaesuRadio(
+        model="FTDX101MP", hamlib_model=1044, advertise="FLEX-6600",
+        bands=_HF + _6M, spectrum="soapy-iftap", hf_dongle_needed=True, verified=False,
+        notes="HF/6m SDR rig, 200 W version of the FTDX101D. hamlib -m 1044 "
+              "(RIG_MODEL_FTDX101MP in hamlib riglist.h, checked 2026-10-01; VERIFY vs target "
+              "box). Built-in scope NOT over CAT -> IF-tap dongle."),
+
+    "FT-710": YaesuRadio(
+        model="FT-710", hamlib_model=1049, advertise="FLEX-6600",
+        bands=_HF + _6M, spectrum="soapy-iftap", hf_dongle_needed=True, verified=False,
+        notes="HF/6m SDR rig. hamlib -m 1049 (RIG_MODEL_FT710 in hamlib riglist.h, checked "
+              "2026-10-01; was wrongly 1046, which is the FT-450D). Needs a hamlib new enough "
+              "to know the FT-710. No CAT scope."),
 
     "FT-817": YaesuRadio(
         model="FT-817", hamlib_model=1020, advertise="FLEX-6700",

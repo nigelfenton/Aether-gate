@@ -4,6 +4,14 @@ All notable changes to Aether-gate. Newest first.
 
 ## [Unreleased]
 
+### Added
+- **Yaesu FTDX101D and FTDX101MP** in the Yaesu registry (hamlib 1040 and 1044), on the same
+  hamlib control plus IF-tap dongle route as the other Yaesu rigs. Untested on a real radio.
+
+### Fixed
+- **FT-710 used the wrong hamlib model, 1046, which is the FT-450D.** rigctld would have driven an
+  FT-710 as an FT-450D. It is now 1049, checked against hamlib's `riglist.h`.
+
 ## [0.5.3] - 2026-09-22
 
 ### Fixed
