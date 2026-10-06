@@ -149,6 +149,14 @@ cd Aether-gate
 sudo ./deploy/install-pi.sh              # full appliance (with the SDR spectrum stack)
 ```
 
+If `./deploy/install-pi.sh` says *Permission denied* (a checkout from before the script was
+marked executable), run it as `sudo bash deploy/install-pi.sh` instead.
+
+If any step fails, the installer stops and says which line, and that the gate and the setup
+service were **not** installed. Fix the cause and re-run it: it is safe to re-run. SDRplay
+support is the exception: it is optional, so if it can't be installed the installer warns and
+carries on.
+
 Variants:
 
 ```sh

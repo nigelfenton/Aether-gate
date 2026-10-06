@@ -29,7 +29,7 @@
 # (2026-07-03). Pinning keeps a rebuild reproducible instead of tracking moving
 # upstream HEADs.
 
-set -euo pipefail
+set -Eeuo pipefail
 
 # --- pinned upstream versions (proven on the Pi5) ------------------------------
 RTLSDR_REPO="https://github.com/rtlsdrblog/rtl-sdr-blog.git"
@@ -73,6 +73,10 @@ WITH_SDR=1
 # own Pi is fine: THEY accept the licence. Baking it into an image that is then
 # published is redistribution, so release builds set this to 0.
 WITH_SDRPLAY=1
+# Set by an explicit --with-sdrplay (add-sdrplay.sh passes it). Then SDRplay is the
+# point of the run, so a failure there is fatal. By default it is a bonus, and
+# its failure must not stop the appliance being installed (#60).
+SDRPLAY_REQUIRED=0
 DRY_RUN=0
 CHECK_ONLY=0
 
@@ -81,7 +85,7 @@ for a in "$@"; do
     --no-sdr)   WITH_SDR=0 ;;
     --with-sdr) WITH_SDR=1 ;;
     --no-sdrplay)   WITH_SDRPLAY=0 ;;
-    --with-sdrplay) WITH_SDRPLAY=1 ;;
+    --with-sdrplay) WITH_SDRPLAY=1; SDRPLAY_REQUIRED=1 ;;
     --dry-run)  DRY_RUN=1 ;;
     --check)    CHECK_ONLY=1 ;;
     -h|--help)  sed -n '2,40p' "$0"; exit 0 ;;
@@ -93,6 +97,19 @@ say()  { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn] %s\033[0m\n' "$*"; }
 run()  { if [ "$DRY_RUN" = 1 ]; then printf '    [dry-run] %s\n' "$*"; else eval "$@"; fi; }
+
+# A FAILURE PART-WAY MUST SAY WHAT IT SKIPPED. Under set -e the script stops at the
+# first failing step, and everything after it simply does not happen: in #60 the
+# SDR stack was built but the gate was never copied and the setup service never
+# installed, and nothing said so. This names the line and what did not run.
+on_error() {
+  local rc=$? line=$1
+  printf '\n\033[1;31m[error] install-pi.sh stopped at line %s (exit %s).\033[0m\n' "$line" "$rc" >&2
+  printf '    Nothing after that step ran, so the gate may NOT be in %s and the\n' "$GATE_DIR" >&2
+  printf '    aether-gate-setup service may NOT be installed. Fix the error above and\n' >&2
+  printf '    re-run: the installer is safe to re-run. ./deploy/install-pi.sh --check shows the state.\n' >&2
+}
+trap 'on_error $LINENO' ERR
 
 need_root() {
   if [ "$CHECK_ONLY" = 0 ] && [ "$DRY_RUN" = 0 ] && [ "$(id -u)" != 0 ]; then
@@ -222,6 +239,18 @@ if [ "$WITH_SDR" = 1 ]; then
   elif [ -e /usr/local/lib/libsdrplay_api.so ] && SoapySDRUtil --info 2>/dev/null | grep -q sdrplay; then
     info "SDRplay API + Soapy module already present — skipping."
   else
+    # OPTIONAL, PROPRIETARY, AND FROM SOMEONE ELSE'S WEBSITE: it must never stop the
+    # appliance being installed (#60). When sdrplay.com moved the .run, every fresh
+    # install died here, after the SDR build but before the gate was deployed or the
+    # setup service installed. Run it in a subshell with its own errexit, and only
+    # treat a failure as fatal when SDRplay was explicitly asked for.
+    # The ERR trap is lifted for the duration: it fires on ANY failing command,
+    # errexit or not, so the subshell's failure would otherwise announce that the
+    # whole install had stopped when it is about to carry on.
+    set +e
+    trap - ERR
+    (
+    set -e
     say "SDR build 4/5: SDRplay API 3.15 (proprietary) -> /usr/local + /opt/sdrplay_api"
     info "fetching from sdrplay.com — installing implies accepting their licence"
     if [ "$DRY_RUN" = 1 ]; then
@@ -289,6 +318,20 @@ UNIT
     clone_pin "$SOAPYSDRPLAY_REPO" "$SOAPYSDRPLAY_COMMIT" "$SRC_DIR/SoapySDRPlay3"
     build_cmake "$SRC_DIR/SoapySDRPlay3"
     run "/sbin/ldconfig"
+    )
+    SDRPLAY_RC=$?
+    trap 'on_error $LINENO' ERR
+    set -e
+    if [ "$SDRPLAY_RC" != 0 ]; then
+      if [ "$SDRPLAY_REQUIRED" = 1 ]; then
+        echo "SDRplay support could not be installed (exit $SDRPLAY_RC) - see the error above." >&2
+        exit "$SDRPLAY_RC"
+      fi
+      warn "SDRplay support was NOT installed (that step failed, exit $SDRPLAY_RC)."
+      info "Everything else carries on. RSP owners: add it later with"
+      info "  sudo ./deploy/install-pi.sh --with-sdrplay"
+      info "If the download failed, sdrplay.com may have moved the API installer."
+    fi
   fi
 
   # Blacklist the kernel DVB driver so it doesn't grab the dongle before SoapySDR.

@@ -4,6 +4,17 @@ All notable changes to Aether-gate. Newest first.
 
 ## [Unreleased]
 
+### Fixed
+- **Pi installer: a fresh install could stop before installing the gate or its setup service.**
+  The optional SDRplay step downloads SDRplay's API from sdrplay.com, and when that download
+  failed (the pinned URL now returns 404) the whole installer stopped: after the SDR build, but
+  before copying the gate to `~/gate` and installing `aether-gate-setup.service`, with nothing
+  saying so. SDRplay is now best-effort unless asked for with `--with-sdrplay` (as
+  `add-sdrplay.sh` does), and any other failure names the line and says what didn't run. (#60,
+  reported by i8ahorse)
+- **`install-pi.sh` and `add-sdrplay.sh` are executable** in the repository, so
+  `sudo ./deploy/install-pi.sh` works on a fresh clone. (#60)
+
 ### Added
 - **Yaesu FTDX101D and FTDX101MP** in the Yaesu registry (hamlib 1040 and 1044), on the same
   hamlib control plus IF-tap dongle route as the other Yaesu rigs. Untested on a real radio.
