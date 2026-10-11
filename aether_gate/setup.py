@@ -179,6 +179,8 @@ def _with_saved_secrets(cfg, profile):
 def _redact_argv(argv):
     out, hide = [], False
     for a in argv:
+        if a.startswith("--pass="):           # the one-token form hides the same secret
+            a = "--pass=***"
         out.append("***" if hide else a)
         hide = a in ("--pass",)
     return out
@@ -545,8 +547,11 @@ def _refusal_message(found):
                     f" enough: systemd starts it again.")
         return msg + f" Stop the unit with: sudo systemctl stop {unit} - then try again."
     # Not a systemd unit we can name (Windows, macOS, a terminal, no /proc).
-    return (f"A gate is running (PID {found['pid']}: {found['cmd']})."
-            f" Stop it, then try again.")
+    # ⚠ The command line can carry the radio's password: units written before
+    # #51 still pass `--pass <pw>` (seen on the Pi 5's aether-gate-9700.service).
+    # This message is shown on the web page, so redact before showing it.
+    cmd = " ".join(_redact_argv((found["cmd"] or "").split()))
+    return f"A gate is running (PID {found['pid']}: {cmd}). Stop it, then try again."
 
 
 def _update_install(body):
