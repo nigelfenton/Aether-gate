@@ -249,6 +249,92 @@ def test_running_gate_is_detected_even_when_started_by_systemd():
         gsetup.subprocess.run = real_run
 
 
+def _refusal_with(pgrep_out, cgroup="", systemctl_out=b""):
+    """The update refusal's message, with pgrep, /proc and systemctl injected."""
+    from aether_gate import setup as gsetup
+
+    class _R:
+        def __init__(self, out):
+            self.stdout = out
+
+    def fake_run(args, *a, **k):
+        return _R(pgrep_out if args[0] == "pgrep" else systemctl_out)
+
+    real_run, real_cg = gsetup.subprocess.run, getattr(gsetup, "_read_cgroup", None)
+    gsetup.subprocess.run = fake_run
+    gsetup._read_cgroup = lambda pid: cgroup
+    try:
+        code, body = gsetup._update_install({})
+    finally:
+        gsetup.subprocess.run = real_run
+        if real_cg is None:
+            del gsetup._read_cgroup
+        else:
+            gsetup._read_cgroup = real_cg
+    assert code == 409 and body["ok"] is False, f"update was not refused: {code} {body}"
+    return body["message"]
+
+
+_YAESU = (b"982 /usr/bin/python3 -u -m aether_gate.setup --no-browser\n"
+          b"12018 /usr/bin/python3 -u -m aether_gate --adapter yaesu --radio FT-847\n")
+
+
+def _never_names_the_setup_ui(msg):
+    """#58: following the advice must not stop the page it is shown on."""
+    assert "*" not in msg, f"advice contains a glob: {msg!r}"
+    assert "aether-gate-setup" not in msg, f"advice names the Setup UI's own unit: {msg!r}"
+
+
+def test_update_refusal_names_the_real_unit():
+    """#57: the refusal must name the unit the gate actually runs under.
+
+    ⚠ REGRESSION TEST FOR A REAL ESCAPE. The message said `sudo systemctl stop
+    aether-gate-*`; on a Pi 5 the gate units are named after the radio
+    (yaesu-gate.service, hpsdr-gate.service ...), so the glob matched none of
+    them and the update stayed refused with no clue what to try next.
+    """
+    msg = _refusal_with(_YAESU, cgroup="0::/system.slice/yaesu-gate.service\n",
+                        systemctl_out=b"NRestarts=0\nActiveState=active\nSubState=running\n")
+    assert "yaesu-gate.service" in msg and "12018" in msg, msg
+    assert "sudo systemctl stop yaesu-gate.service" in msg, msg
+    assert "loop" not in msg, f"a healthy unit was called a restart loop: {msg!r}"
+    _never_names_the_setup_ui(msg)
+
+    # cgroup v1 names the unit on the systemd line, among others
+    msg = _refusal_with(_YAESU, cgroup=("12:cpu,cpuacct:/system.slice/yaesu-gate.service\n"
+                                        "1:name=systemd:/system.slice/yaesu-gate.service\n"),
+                        systemctl_out=b"NRestarts=0\nSubState=running\n")
+    assert "sudo systemctl stop yaesu-gate.service" in msg, msg
+
+
+def test_update_refusal_says_when_the_unit_is_crash_looping():
+    """#57: a unit restarting in a loop re-trips the guard every RestartSec, so
+    "stop it" must be "stop the UNIT" and say why. Seen with 1575 restarts in a
+    day, the radio's RTL dongle unplugged."""
+    msg = _refusal_with(_YAESU, cgroup="0::/system.slice/kenwood-gate.service\n",
+                        systemctl_out=(b"NRestarts=1575\nActiveState=activating\n"
+                                       b"SubState=auto-restart\n"))
+    assert "kenwood-gate.service" in msg and "loop" in msg and "1575" in msg, msg
+    assert "sudo systemctl stop kenwood-gate.service" in msg, msg
+    _never_names_the_setup_ui(msg)
+
+
+def test_update_refusal_without_a_unit_shows_the_process():
+    """No systemd unit to name (Windows, macOS, a terminal): name the PID and
+    the command line rather than inventing a unit."""
+    msg = _refusal_with(_YAESU, cgroup="")
+    assert "12018" in msg and "--adapter yaesu" in msg, msg
+    assert "systemctl" not in msg, f"suggested systemctl with no unit to name: {msg!r}"
+    _never_names_the_setup_ui(msg)
+
+
+def test_update_refusal_never_names_the_setup_ui():
+    """#58: even if the gate's cgroup somehow resolves to the Setup UI's unit,
+    the advice must not tell the operator to stop the page they are reading."""
+    msg = _refusal_with(_YAESU, cgroup="0::/system.slice/aether-gate-setup.service\n")
+    _never_names_the_setup_ui(msg)
+
+
 def test_reported_version_comes_from_disk_not_from_memory():
     """After an update the page must report the NEW version, not the imported one.
 
