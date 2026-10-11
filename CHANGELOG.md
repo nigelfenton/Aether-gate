@@ -5,6 +5,14 @@ All notable changes to Aether-gate. Newest first.
 ## [Unreleased]
 
 ### Fixed
+- **Setup page: refusing an update now names the gate unit to stop, and never the Setup UI.**
+  While a gate runs as a service, the update is refused and the page used to say
+  `sudo systemctl stop aether-gate-*`. On the Pi that glob matched none of the gate units, which
+  are named after the radio (`yaesu-gate.service`, `hpsdr-gate.service` ...), and it did match
+  `aether-gate-setup.service`, so following the advice stopped the page it was shown on. The
+  refusal now names the unit the gate runs under and its PID, and says when the unit is
+  restarting in a loop, which is why stopping the process alone never cleared it. Where there is
+  no systemd unit (Windows, macOS, a terminal) it shows the PID and command line. (#57, #58)
 - **Pi installer: a fresh install could stop before installing the gate or its setup service.**
   The optional SDRplay step downloads SDRplay's API from sdrplay.com, and when that download
   failed (the pinned URL now returns 404) the whole installer stopped: after the SDR build, but

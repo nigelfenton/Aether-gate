@@ -408,19 +408,29 @@ def _update_status():
 def _gate_running():
     """Is ANY gate running — ours, or one started by systemd?
 
+    Returns (running, how). `_find_gate()` has the same answer with the PID and
+    command line kept, which the update refusal needs to name the unit (#57).
+    """
+    found = _find_gate()
+    return (found is not None), (found["how"] if found else None)
+
+
+def _find_gate():
+    """The running gate as {"how", "pid", "cmd"}, or None.
+
     ⚠ Checking only `_proc` (the child this UI started) is not enough, and that
     mistake shipped once: on the appliance the gate normally runs as a SYSTEMD
     UNIT (aether-gate-9700.service and friends), so `_proc` is None and the
     guard never fires. Caught on a Pi 4 — the update installed underneath a
     live, streaming gate.
 
-    Returns (running, how) so the message can tell the operator WHICH thing to
-    stop; "press Stop" is useless advice when the gate is a service they never
+    Returns "how" so the message can tell the operator WHICH thing to stop;
+    "press Stop" is useless advice when the gate is a service they never
     started from this page.
     """
     with _lock:
         if _proc is not None and _proc.poll() is None:
-            return True, "ui"
+            return {"how": "ui", "pid": _proc.pid, "cmd": None}
     # Any `python -m aether_gate` that is not this setup UI. pgrep is on every
     # Debian/Pi OS image; if it is missing we fail OPEN rather than block
     # updates forever, since the swap itself is still safe and reversible.
@@ -428,7 +438,7 @@ def _gate_running():
         out = subprocess.run(["pgrep", "-af", "aether_gate"],
                              capture_output=True, timeout=5).stdout.decode(errors="replace")
     except Exception:
-        return False, None
+        return None
 
     me = os.getpid()
     for line in out.splitlines():
@@ -459,8 +469,84 @@ def _gate_running():
         after = tail[1][:1] if len(tail) > 1 else ""
         if after and after != " ":
             continue
-        return True, "service"
-    return False, None
+        return {"how": "service", "pid": pid, "cmd": cmd}
+    return None
+
+
+# The Setup UI's own unit. Advice must never name it, nor a pattern that
+# matches it: stopping it takes down the page the advice is shown on (#58).
+SETUP_UNIT = "aether-gate-setup.service"
+
+
+def _read_cgroup(pid):
+    """/proc/<pid>/cgroup as text, or "" where there is none (not Linux, gone, no access)."""
+    try:
+        with open(f"/proc/{pid}/cgroup", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def _unit_for_pid(pid):
+    """The systemd unit a process runs under, from its cgroup, or None.
+
+    cgroup v2 has one line, `0::/system.slice/yaesu-gate.service`; v1 has several,
+    the systemd one being `1:name=systemd:/system.slice/yaesu-gate.service`.
+    The unit is the last path element that ends in `.service`.
+    """
+    for line in _read_cgroup(pid).splitlines():
+        path = line.split(":", 2)[-1]
+        for part in reversed(path.split("/")):
+            if part.endswith(".service"):
+                return part
+    return None
+
+
+def _unit_restart_state(unit):
+    """(restarts, restarting) for a unit, from systemd; (None, False) if unknown.
+
+    `restarting` is systemd's own word for it: SubState `auto-restart`, the unit
+    sitting between a crash and its next start. A gate whose radio is missing
+    loops there indefinitely (#57 saw 1575 restarts in a day), and every new
+    process re-trips the update guard.
+    """
+    try:
+        out = subprocess.run(
+            ["systemctl", "show", unit, "-p", "NRestarts", "-p", "ActiveState", "-p", "SubState"],
+            capture_output=True, timeout=5).stdout.decode(errors="replace")
+    except Exception:
+        return None, False
+    props = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+    try:
+        restarts = int(props.get("NRestarts", ""))
+    except ValueError:
+        restarts = None
+    return restarts, props.get("SubState") == "auto-restart"
+
+
+def _refusal_message(found):
+    """What to tell the operator when an update is refused because a gate runs.
+
+    ⚠ The old text told everyone to `sudo systemctl stop aether-gate-*`. On the
+    Pi that glob matched none of the gate units (they are named after the radio:
+    yaesu-gate.service, hpsdr-gate.service ...) and DID match the Setup UI's own
+    unit, so following the advice stopped the page it was read on and left the
+    gate running (#57, #58). Name what was actually found instead.
+    """
+    if found["how"] == "ui":
+        return "The gate is running. Press Stop first, then update."
+    unit = _unit_for_pid(found["pid"])
+    if unit and unit != SETUP_UNIT:
+        restarts, restarting = _unit_restart_state(unit)
+        msg = f"A gate is running as {unit} (PID {found['pid']})."
+        if restarting or (restarts or 0) >= 3:
+            count = f" ({restarts} restarts)" if restarts else ""
+            msg += (f" It is restarting in a loop{count}, so ending the process is not"
+                    f" enough: systemd starts it again.")
+        return msg + f" Stop the unit with: sudo systemctl stop {unit} - then try again."
+    # Not a systemd unit we can name (Windows, macOS, a terminal, no /proc).
+    return (f"A gate is running (PID {found['pid']}: {found['cmd']})."
+            f" Stop it, then try again.")
 
 
 def _update_install(body):
@@ -473,13 +559,9 @@ def _update_install(body):
     global _update_busy
     from . import updater
 
-    running, how = _gate_running()
-    if running:
-        return 409, {"ok": False,
-                     "message": ("The gate is running. Press Stop first, then update."
-                                 if how == "ui" else
-                                 "A gate is running as a system service. Stop it before "
-                                 "updating (sudo systemctl stop aether-gate-*), then try again.")}
+    found = _find_gate()
+    if found:
+        return 409, {"ok": False, "message": _refusal_message(found)}
 
     with _update_lock:
         if _update_busy:
