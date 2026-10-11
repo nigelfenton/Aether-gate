@@ -12,7 +12,9 @@ All notable changes to Aether-gate. Newest first.
   `aether-gate-setup.service`, so following the advice stopped the page it was shown on. The
   refusal now names the unit the gate runs under and its PID, and says when the unit is
   restarting in a loop, which is why stopping the process alone never cleared it. Where there is
-  no systemd unit (Windows, macOS, a terminal) it shows the PID and command line. (#57, #58)
+  no systemd unit (Windows, macOS, a terminal) it shows the PID and command line, with any
+  `--pass` value masked, since units written before #51 still carry the radio's password
+  there. (#57, #58)
 - **Pi installer: a fresh install could stop before installing the gate or its setup service.**
   The optional SDRplay step downloads SDRplay's API from sdrplay.com, and when that download
   failed (the pinned URL now returns 404) the whole installer stopped: after the SDR build, but

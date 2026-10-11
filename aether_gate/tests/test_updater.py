@@ -328,6 +328,23 @@ def test_update_refusal_without_a_unit_shows_the_process():
     _never_names_the_setup_ui(msg)
 
 
+def test_update_refusal_never_shows_the_radio_password():
+    """The no-unit message shows the gate's command line on the web page, and a
+    unit written before #51 still passes the radio's password as `--pass <pw>`
+    (seen on the Pi 5's aether-gate-9700.service). It must be redacted."""
+    gate = (b"982 /usr/bin/python3 -u -m aether_gate.setup --no-browser\n"
+            b"1856 /usr/bin/python3 -m aether_gate --adapter icom9700 --user op"
+            b" --pass s3cret-pw --radio-ip 192.0.2.8\n")
+    msg = _refusal_with(gate, cgroup="")
+    assert "s3cret-pw" not in msg, f"the radio password reached the web page: {msg!r}"
+    assert "--pass ***" in msg and "1856" in msg, msg
+
+    gate = (b"982 /usr/bin/python3 -u -m aether_gate.setup --no-browser\n"
+            b"1856 /usr/bin/python3 -m aether_gate --adapter icom9700 --pass=s3cret-pw\n")
+    msg = _refusal_with(gate, cgroup="")
+    assert "s3cret-pw" not in msg, f"the --pass= form leaked: {msg!r}"
+
+
 def test_update_refusal_never_names_the_setup_ui():
     """#58: even if the gate's cgroup somehow resolves to the Setup UI's unit,
     the advice must not tell the operator to stop the page they are reading."""
