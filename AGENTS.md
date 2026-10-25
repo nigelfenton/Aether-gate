@@ -5,7 +5,8 @@ live in [`CONSTITUTION.md`](CONSTITUTION.md); this file is how to build, test an
 verify without breaking something invisible.
 
 **Read [`CONSTITUTION.md`](CONSTITUTION.md) §I before touching anything that
-could key a radio.** The gate does not transmit, and that is deliberate.
+could key a radio.** The gate keys real RF on exactly one path — the Icom LAN
+adapter (IC-9700), behind guards — and deliberately nowhere else.
 
 **Everything AE shows about a bridged radio comes through this code.** AE cannot
 independently check what the gate reports — see CONSTITUTION §II. Where this file
@@ -158,7 +159,8 @@ and must fail fast or skip when it cannot bind rather than consuming its timeout
 
 Read `CONSTITUTION.md` first, then the diff. The failure mode this project
 actually suffers is not ugly code — it is **a plausible number that is wrong**,
-or an invariant (no TX; report what the radio said; declare real capability)
+or an invariant (no TX except the guarded Icom path; report what the radio said;
+declare real capability)
 quietly weakened at a seam. Check those before style.
 
 ---
