@@ -23,19 +23,28 @@ Companion: [`AGENTS.md`](AGENTS.md) for build, test and verification mechanics.
 
 ---
 
-## I. The gate does not transmit — and if it ever does, intent must be unambiguous
+## I. The gate transmits only where intent is unambiguous — everywhere else it does not key
 
-**Aether-gate does frequency/mode control and receive. It does not key a radio.**
+**Aether-gate does frequency/mode control and receive on every radio family. It keys
+a radio on exactly one path today: the Icom LAN adapter (IC-9700).** There, AE's
+`xmit 1` reaches the adapter's `key_tx()` and real RF leaves the rig, behind an arm
+latch, a TX-band whitelist (2 m / 70 cm; 23 cm refused), a bare-carrier guard, a 10 s
+stuck-PTT watchdog, and an unkey + disarm when AE disconnects. `--rx-only` refuses it.
 
-Stated in the README, and reflected in the adapter contract:
+Stated in the README, and reflected in the adapter contract: the engine keys a radio
+only through an adapter's `key_tx()`, and only the Icom LAN adapter defines one.
 `RadioAdapter.wants_tx()` returns `None` by default — "leave TX alone."
 
-What makes this subtle: **AE's UI lights up as though transmitting.** The gate
-acknowledges the transmit command and reports `transmitting` back to AE, but
-never asserts PTT. The absence of RF is invisible from the app.
+What makes this subtle: **AE's UI lights up as though transmitting on every family.**
+Where an adapter has no `key_tx()` the gate acknowledges the transmit command and
+reports `transmitting` back to AE, but never asserts PTT. The absence of RF is
+invisible from the app.
 
-Today that safety rests on a *convention* — no adapter overrides `wants_tx()` —
-not on an enforced invariant. Treat that as a known weakness, not a design.
+Today the safety for those families rests on a *convention* — no other adapter
+defines `key_tx()` — not on an enforced invariant. Treat that as a known weakness,
+not a design. On the Icom path it rests on the guards above, and the engine **arms
+itself on every AE connect**, so on a shared LAN any AE client that connects can reach
+it: an unattended gateway should run with `--rx-only`.
 
 **AE Constitution VI (*Never Transmits Without Operator Intent*) is the standard
 any PTT work must meet.** Its wording matters: never key on a timer, as a side
