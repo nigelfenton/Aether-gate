@@ -42,23 +42,30 @@ radio chooser with a live panadapter and waterfall.
 - **Runs headless as a service** — on a Raspberry Pi it's a flash-and-go appliance;
   each radio is its own systemd service, always ready in AE's chooser.
 
-> ⚠️ **Receive & control only — no transmit yet.** Aether-gate does frequency/mode
-> control and spectrum/waterfall/audio *receive*. **It does not key the radio.** If you
-> press TX/MOX/TUNE in AetherSDR, AE's UI will light up as if transmitting, but **no RF
-> is produced** — the gate acknowledges the transmit command and reports "transmitting"
-> back to AE, but never asserts PTT on the rig. This applies to **every** radio family
-> below (Icom LAN, hamlib/CAT, dongles). PTT wiring + arm/tx-band safety is the next
-> planned feature; until then treat the gate as a receiver + controller. See
+> ⚠️ **Every radio family does receive + control. Only ONE can transmit: the Icom LAN
+> path (IC-9700), behind guards.** On that path, TX/MOX/TUNE in AetherSDR really keys the
+> rig (CI-V `1C 00`) and real RF leaves it — only on **2 m / 70 cm** (23 cm is refused),
+> and only through an arm latch, a bare-carrier guard and a 10 s stuck-PTT watchdog,
+> with an unkey + disarm if AE disconnects. **The gate arms itself on every AE connect**,
+> so on a shared LAN any AE client can reach that path: run unattended gateways with
+> **`--rx-only`** (or `AETHER_GATE_RX_ONLY=1`), which refuses PTT and makes AE grey its
+> TX button.
+>
+> **Every other family — hamlib/CAT (Kenwood, Yaesu), the IC-7300 USB path, SoapySDR
+> dongles, HPSDR, `sim` — does not key the radio.** AE's UI may still light up as if
+> transmitting, but **no RF is produced**: the gate acknowledges the transmit command and
+> reports "transmitting" back to AE without ever asserting PTT. See
 > *[How it works](#how-it-works)* for the detail.
 
 ## Supported radios
 
-**All entries below are receive + control.** The Status column is about how well the
-**RX/control** path works; **none of these transmit yet** (see the note above).
+**Every entry below does receive + control.** The Status column is about how well the
+**RX/control** path works. Only the Icom LAN path can also transmit, guarded (see the
+note above); **no other family keys a radio**.
 
 | Family | How | Spectrum | Status |
 |---|---|---|---|
-| **Icom LAN** (IC-9700, RS-BA1-style) | native LAN / CI-V | radio's own scope | ✅ proven (IC-9700) |
+| **Icom LAN** (IC-9700, RS-BA1-style) | native LAN / CI-V | radio's own scope | ✅ proven (IC-9700); guarded TX on 2 m / 70 cm |
 | **Icom IC-7300 USB** | USB CI-V + USB Audio CODEC | radio's own scope | ✅ proven RX/control only |
 | **Kenwood / Yaesu / Elecraft / Icom-USB** (CAT) | hamlib (`rigctld`) | SDR dongle, CAT-steered | ✅ proven (Kenwood TS-450S); other hamlib rigs = same path |
 | **SoapySDR dongles** (RTL-SDR, Airspy, SDRplay) | SoapySDR | the dongle itself | ✅ |
