@@ -188,7 +188,22 @@ class HpsdrAdapter(RadioAdapter):
         for k in range(6):
             self._send_cc(regs[k % 3], regs[(k + 1) % 3])
 
-        # --- demod setup: staged anti-alias + decimate samp_rate -> 24 kHz ---
+        self._init_demod()
+
+        self._run = True
+        self._reader = threading.Thread(target=self._read_loop, daemon=True,
+                                        name="hpsdr-rx")
+        self._reader.start()
+        # EP2 egress on its own thread so our C&C cadence can't gate ingest
+        # (see _cc_loop — structural, not a fix for a measured fault).
+        self._sender = threading.Thread(target=self._cc_loop, daemon=True,
+                                        name="hpsdr-cc")
+        self._sender.start()
+
+    def _init_demod(self):
+        """Demod setup: staged anti-alias + decimate samp_rate -> 24 kHz, then the
+        SSB sideband filter. Split out of open() so it runs without hardware."""
+        np = self._np
         # At 48 kHz this is just /2 (one cheap stage); wider rates factor into a
         # few small stages so the taps only run at progressively lower rates.
         self._decim = max(1, int(round(self.samp_rate / AUDIO_RATE)))    # 48k/24k = 2
@@ -202,16 +217,25 @@ class HpsdrAdapter(RadioAdapter):
             h = (h / h.sum()).astype(np.float64)
             self._stage_firs.append([h, np.zeros(ntaps - 1, dtype=np.complex128), M])
         self._iq_resid = np.zeros(0, dtype=np.complex64)
+        self._init_ssb_filter()
 
-        self._run = True
-        self._reader = threading.Thread(target=self._read_loop, daemon=True,
-                                        name="hpsdr-rx")
-        self._reader.start()
-        # EP2 egress on its own thread so our C&C cadence can't gate ingest
-        # (see _cc_loop — structural, not a fix for a measured fault).
-        self._sender = threading.Thread(target=self._cc_loop, daemon=True,
-                                        name="hpsdr-cc")
-        self._sender.start()
+    def _init_ssb_filter(self):
+        """SSB sideband selection: a complex one-sided bandpass, the same design
+        as the soapy adapter (24f256f) — lowpass taps of half-width 1500 Hz
+        shifted to +1500 Hz pass ~0..3 kHz ABOVE the carrier (USB); conjugate
+        taps mirror it below (LSB). The previous demod took real(z) for USB and
+        real(conj(z)) for LSB — but real(conj(z)) == real(z), so the two modes
+        were byte-identical and both sidebands folded together."""
+        np = self._np
+        pd_rate = self.samp_rate / self._decim             # post-decimation rate (24 kHz)
+        ssb_ntaps = 63
+        k = np.arange(ssb_ntaps) - (ssb_ntaps - 1) / 2.0
+        f_half = 1500.0 / pd_rate                          # half-width, normalised
+        lp = np.sinc(2 * f_half * k) * np.hamming(ssb_ntaps)
+        lp = lp / lp.sum()
+        self._ssb_usb = (lp * np.exp(2j * np.pi * (1500.0 / pd_rate) * k)).astype(np.complex128)
+        self._ssb_lsb = np.conj(self._ssb_usb)
+        self._ssb_state = np.zeros(ssb_ntaps - 1, dtype=np.complex128)
 
     def close(self):
         self._run = False
@@ -499,8 +523,8 @@ class HpsdrAdapter(RadioAdapter):
     def get_audio(self, n_samples, slice_hz=None, mode=None):
         """Return n_samples of 24 kHz mono audio demodulated from the live IQ.
         None until enough IQ is buffered. Mirrors the soapy SSB demod: mix the
-        slice to baseband, staged-decimate to 24 kHz, take the real part (USB) /
-        conj-real (LSB), then a light AGC."""
+        slice to baseband, staged-decimate to 24 kHz, select the sideband with a
+        complex one-sided bandpass (USB / LSB), then a light AGC."""
         np = self._np
         if np is None or not self._stage_firs:
             return None
@@ -536,11 +560,12 @@ class HpsdrAdapter(RadioAdapter):
         if len(base) < n_samples:
             base = np.concatenate([base, np.zeros(n_samples - len(base), dtype=base.dtype)])
 
-        # 3) SSB demod
-        if self._mode.startswith("LSB"):
-            audio = np.real(np.conj(base))
-        else:                                # USB / DIGU / default
-            audio = np.real(base)
+        # 3) SSB demod: one-sided bandpass selects the sideband (see _init_ssb_filter)
+        taps = self._ssb_lsb if self._mode.startswith("LSB") else self._ssb_usb   # USB / DIGU / default
+        x = np.concatenate([self._ssb_state, base])
+        y = np.convolve(x, taps, mode="valid")
+        self._ssb_state = x[len(x) - (len(taps) - 1):]   # overlap-save across blocks
+        audio = 2.0 * np.real(y)             # x2: real() halves the one-sided energy
 
         audio = audio * self._audio_gain
         rms = float(np.sqrt(np.mean(audio * audio)) + 1e-9)
