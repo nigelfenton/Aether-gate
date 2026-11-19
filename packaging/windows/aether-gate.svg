@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120"><defs>
+  <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#16233a"/><stop offset="1" stop-color="#0a1120"/></linearGradient>
+  <linearGradient id="amb" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffb35c"/><stop offset="1" stop-color="#ff7a1a"/></linearGradient>
+</defs><rect x="2" y="2" width="116" height="116" rx="28" fill="url(#tile)"/><circle cx="60" cy="60" r="41" fill="none" stroke="url(#amb)" stroke-width="10" stroke-linecap="round" stroke-dasharray="205 53" transform="rotate(-38 60 60)"/><g fill="none" stroke="#f4efe6" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"><path d="M42 84 V60 a18 18 0 0 1 36 0 V84"/></g></svg>

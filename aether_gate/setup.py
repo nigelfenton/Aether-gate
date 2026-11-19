@@ -1328,6 +1328,12 @@ async function poll(){
 poll(); setInterval(poll,3000);
 </script></body></html>"""
 
+# The browser-tab icon for every page: the Aether-gate "signal ring" mark (the bold small-size
+# variant, packaging/windows/aether-gate.svg), inline so it shows on the PIN page too, before login.
+FAVICON = '<link rel=icon type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjAgMTIwIiB3aWR0aD0iMTIwIiBoZWlnaHQ9IjEyMCI+PGRlZnM+CiAgPGxpbmVhckdyYWRpZW50IGlkPSJ0aWxlIiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjMTYyMzNhIi8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjMGExMTIwIi8+PC9saW5lYXJHcmFkaWVudD4KICA8bGluZWFyR3JhZGllbnQgaWQ9ImFtYiIgeDE9IjAiIHkxPSIwIiB4Mj0iMSIgeTI9IjEiPjxzdG9wIG9mZnNldD0iMCIgc3RvcC1jb2xvcj0iI2ZmYjM1YyIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iI2ZmN2ExYSIvPjwvbGluZWFyR3JhZGllbnQ+CjwvZGVmcz48cmVjdCB4PSIyIiB5PSIyIiB3aWR0aD0iMTE2IiBoZWlnaHQ9IjExNiIgcng9IjI4IiBmaWxsPSJ1cmwoI3RpbGUpIi8+PGNpcmNsZSBjeD0iNjAiIGN5PSI2MCIgcj0iNDEiIGZpbGw9Im5vbmUiIHN0cm9rZT0idXJsKCNhbWIpIiBzdHJva2Utd2lkdGg9IjEwIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1kYXNoYXJyYXk9IjIwNSA1MyIgdHJhbnNmb3JtPSJyb3RhdGUoLTM4IDYwIDYwKSIvPjxnIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2Y0ZWZlNiIgc3Ryb2tlLXdpZHRoPSIxMCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cGF0aCBkPSJNNDIgODQgVjYwIGExOCAxOCAwIDAgMSAzNiAwIFY4NCIvPjwvZz48L3N2Zz4=">'
+PAGE, AUTH_PAGE, KNOWN_PAGE = (pg.replace("<head><meta charset=utf-8>", "<head><meta charset=utf-8>" + FAVICON, 1)
+                               for pg in (PAGE, AUTH_PAGE, KNOWN_PAGE))
+
 
 def main(argv=None):
     ip = _local_ip()

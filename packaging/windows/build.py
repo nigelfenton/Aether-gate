@@ -83,6 +83,7 @@ def main():
         "--name", "AetherGate",
         "--onedir",
         "--console",            # the gate prints its status; closing the window stops it
+        "--icon", os.path.join(ROOT, "packaging", "windows", "aether-gate.ico"),
         "--collect-submodules", "aether_gate",
         # pyserial is imported lazily inside the Icom USB adapters, so
         # PyInstaller does not see it by following imports.
