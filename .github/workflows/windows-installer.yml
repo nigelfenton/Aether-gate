@@ -63,7 +63,7 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "Building: ${tag:-the PR head}"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ steps.ref.outputs.tag || github.sha }}
 
@@ -79,7 +79,7 @@ jobs:
           git archive "${{ github.sha }}" packaging/windows | tar -x
           ls packaging/windows
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -92,7 +92,7 @@ jobs:
       # the build script itself, which carries the pins.
       - name: Cache the SDR stack
         id: sdrcache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: build/sdr-prefix
           key: sdr-${{ runner.os }}-py312-${{ hashFiles('packaging/windows/build_sdr.ps1') }}
@@ -209,7 +209,7 @@ jobs:
         env:
           AG_VERSION: ${{ steps.ver.outputs.version }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: aether-gate-windows-installer
           path: |
@@ -230,7 +230,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: aether-gate-windows-installer
           path: out
