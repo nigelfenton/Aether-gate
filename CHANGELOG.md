@@ -4,6 +4,11 @@ All notable changes to Aether-gate. Newest first.
 
 ## [Unreleased]
 
+### Added
+- **An icon.** The Windows program, its installer and the Setup page's browser tab now carry the
+  Aether-gate "signal ring" mark (an arch with a signal passing through, in an amber ring). They had
+  none: the program showed PyInstaller's default and the installer Inno Setup's.
+
 ### Fixed
 - **Setup page: refusing an update now names the gate unit to stop, and never the Setup UI.**
   While a gate runs as a service, the update is refused and the page used to say

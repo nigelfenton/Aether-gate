@@ -49,6 +49,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; and only that mode gets the firewall task, which does need admin.
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
+SetupIconFile=aether-gate.ico
 UninstallDisplayIcon={app}\AetherGate.exe
 CloseApplications=yes
 
